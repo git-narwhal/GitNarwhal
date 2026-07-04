@@ -1061,7 +1061,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             override fun getPreferredScrollableViewportSize() = preferredSize
             override fun getScrollableUnitIncrement(r: Rectangle, o: Int, d: Int) = 16
             override fun getScrollableBlockIncrement(r: Rectangle, o: Int, d: Int) = r.height
-            override fun getScrollableTracksViewportWidth()  = parent?.let { preferredSize.width < it.width } ?: false
+            override fun getScrollableTracksViewportWidth()  = true
             override fun getScrollableTracksViewportHeight() = false
         }.apply {
             layout     = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -1154,8 +1154,16 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 add(hunkLabel,  BorderLayout.WEST)
                 add(hunkBtnRow, BorderLayout.EAST)
             }
+            val lineScroll = JScrollPane(lineList).apply {
+                alignmentX = Component.LEFT_ALIGNMENT
+                border     = BorderFactory.createEmptyBorder()
+                horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED
+                verticalScrollBarPolicy   = JScrollPane.VERTICAL_SCROLLBAR_NEVER
+                viewport.background = bgColor
+                maximumSize = Dimension(Int.MAX_VALUE, lineList.preferredSize.height + horizontalScrollBar.preferredSize.height)
+            }
             container.add(hunkHeaderRow)
-            container.add(lineList.apply { alignmentX = Component.LEFT_ALIGNMENT })
+            container.add(lineScroll)
             container.add(Box.createVerticalStrut(4))
         }
         container.add(Box.createVerticalGlue())
