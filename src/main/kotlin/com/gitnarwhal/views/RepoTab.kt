@@ -860,7 +860,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         val conflictCodes = setOf("UU","AA","DD","AU","UA","DU","UD")
         val conflictFiles = mutableListOf<String>()
         for (line in out.lines()) {
-            if (line.length < 3 || line.startsWith("##")) continue
+            if (line.length < 3 || line[2] != ' ' || line.startsWith("##")) continue
             val x    = line[0]; val y = line[1]; val file = line.substring(3)
             if (matchesIgnorePattern(file)) continue
             val code = "$x$y"
@@ -2008,7 +2008,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 val unpushed   = fUnpushed.get()
                 val worktrees  = fWorktrees.get()
                 val (branch, tracking) = fBranchTrack.get()
-                val modified   = status.output.lines().count { it.length > 2 && !it.startsWith("##") }
+                val modified   = status.output.lines().count { it.length > 2 && it[2] == ' ' && !it.startsWith("##") }
                 // Heavy graph layout computed HERE (background), not on the EDT.
                 // Only the first [window] commits are laid out — keeps the JTable small
                 // enough that Java2D renders it reliably; more load on scroll.
