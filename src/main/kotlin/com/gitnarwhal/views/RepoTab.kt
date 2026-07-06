@@ -394,6 +394,10 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         // Min gap between focus-triggered refreshes (ms).
         private const val FOCUS_REFRESH_MS = 3000L
 
+        // Hunks taller than this many visible lines get their own scrollbar and can
+        // flex-grow into leftover diff-viewport space; shorter hunks stay fixed.
+        private const val HUNK_CAP_LINES = 20
+
         // Shared, bounded pool for git fan-out in refresh(). Caps total concurrent git
         // subprocesses across all tabs so refreshes can't spawn an unbounded process storm.
         // Sized to cover refresh()'s 7 parallel reads without serializing a single refresh.
@@ -1062,9 +1066,15 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             override fun getScrollableUnitIncrement(r: Rectangle, o: Int, d: Int) = 16
             override fun getScrollableBlockIncrement(r: Rectangle, o: Int, d: Int) = r.height
             override fun getScrollableTracksViewportWidth()  = true
-            override fun getScrollableTracksViewportHeight() = false
+            // Only stretch to fill the viewport when everything already fits at its
+            // minimum size — otherwise fall back to the natural (larger) preferred
+            // size so the outer diffScrollPane's vertical scrollbar kicks in.
+            override fun getScrollableTracksViewportHeight(): Boolean {
+                val vp = parent as? JViewport ?: return false
+                return preferredSize.height < vp.height
+            }
         }.apply {
-            layout     = BoxLayout(this, BoxLayout.Y_AXIS)
+            layout     = GridBagLayout()
             background = bgColor
         }
         if (diffText.isBlank()) {
@@ -1073,25 +1083,26 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 staged             -> "No staged changes in this file."
                 else               -> "No changes in this file have been detected, or it is a binary file\nor it is configured to be ignored by the file patterns."
             }
-            container.add(object : JPanel(GridBagLayout()), Scrollable {
-                override fun getPreferredScrollableViewportSize() = preferredSize
-                override fun getScrollableUnitIncrement(r: Rectangle, o: Int, d: Int) = 16
-                override fun getScrollableBlockIncrement(r: Rectangle, o: Int, d: Int) = r.height
-                override fun getScrollableTracksViewportWidth()  = true
-                override fun getScrollableTracksViewportHeight() = true
-            }.apply {
+            container.add(JPanel(GridBagLayout()).apply {
                 background = bgColor
-                maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
-                alignmentX = Component.LEFT_ALIGNMENT
                 add(JLabel("<html><div style='text-align:center'>${ msg.replace("\n", "<br>") }</div></html>").apply {
                     foreground = UIManager.getColor("Label.disabledForeground") ?: Color.GRAY
                     font       = font.deriveFont(Font.PLAIN, 12f)
                 })
+            }, GridBagConstraints().apply {
+                gridx = 0; gridy = 0; weightx = 1.0; weighty = 1.0
+                fill  = GridBagConstraints.BOTH
             })
             return container
         }
         val parsed = parseDiff(diffText)
         val actionVerb = if (staged) "Unstage" else "Stage"
+
+        var gridRow    = 0
+        var hasBigHunk = false
+        val gbc = GridBagConstraints().apply {
+            gridx = 0; weightx = 1.0; fill = GridBagConstraints.BOTH
+        }
 
         parsed.hunks.forEachIndexed { idx, hunk ->
             val headerInfo = hunk.header.substringAfter("@@").substringBefore("@@").trim()
@@ -1154,19 +1165,41 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 add(hunkLabel,  BorderLayout.WEST)
                 add(hunkBtnRow, BorderLayout.EAST)
             }
+            // Hunks taller than HUNK_CAP_LINES get their own vertical scrollbar and a
+            // GridBag weighty of 1, so any leftover space in the diff viewport is
+            // handed to hunks that actually need to scroll — hunks that already fit
+            // in full are never stretched.
+            val rowHeight  = if (hunk.lines.isNotEmpty()) lineList.preferredSize.height / hunk.lines.size else 16
+            val capHeight  = rowHeight * HUNK_CAP_LINES
+            val isBigHunk  = lineList.preferredSize.height > capHeight
+            if (isBigHunk) hasBigHunk = true
+
             val lineScroll = JScrollPane(lineList).apply {
                 alignmentX = Component.LEFT_ALIGNMENT
                 border     = BorderFactory.createEmptyBorder()
                 horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED
-                verticalScrollBarPolicy   = JScrollPane.VERTICAL_SCROLLBAR_NEVER
+                verticalScrollBarPolicy   = if (isBigHunk) JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+                                            else            JScrollPane.VERTICAL_SCROLLBAR_NEVER
                 viewport.background = bgColor
-                maximumSize = Dimension(Int.MAX_VALUE, lineList.preferredSize.height + horizontalScrollBar.preferredSize.height)
+                if (isBigHunk) {
+                    preferredSize = Dimension(preferredSize.width, capHeight)
+                    minimumSize   = Dimension(0, capHeight)
+                } else {
+                    maximumSize = Dimension(Int.MAX_VALUE, lineList.preferredSize.height + horizontalScrollBar.preferredSize.height)
+                }
             }
-            container.add(hunkHeaderRow)
-            container.add(lineScroll)
-            container.add(Box.createVerticalStrut(4))
+
+            gbc.gridy = gridRow++; gbc.weighty = 0.0
+            container.add(hunkHeaderRow, gbc)
+            gbc.gridy = gridRow++; gbc.weighty = if (isBigHunk) 1.0 else 0.0
+            container.add(lineScroll, gbc)
+            gbc.gridy = gridRow++; gbc.weighty = 0.0
+            container.add(Box.createVerticalStrut(4), gbc)
         }
-        container.add(Box.createVerticalGlue())
+        // Absorbs leftover viewport space only when no hunk already claims it —
+        // keeps small, fully-visible hunks from being stretched.
+        gbc.gridy = gridRow; gbc.weighty = if (hasBigHunk) 0.0 else 1.0
+        container.add(Box.createGlue(), gbc)
         return container
     }
 
@@ -1453,7 +1486,11 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                         "WORKTREES"  -> FontIcon.of(MaterialDesign.MDI_FOLDER_MULTIPLE, 14, fg)
                         else         -> null
                     }
-                    font = if (node.parent == branchRoot) font.deriveFont(Font.BOLD)
+                    val containsActiveBranch = node.parent != branchRoot &&
+                        node.depthFirstEnumeration().asSequence()
+                            .filterIsInstance<DefaultMutableTreeNode>()
+                            .any { (it.userObject as? BranchInfo)?.isActive == true }
+                    font = if (node.parent == branchRoot || containsActiveBranch) font.deriveFont(Font.BOLD)
                            else font.deriveFont(Font.PLAIN)
                 }
             }
@@ -1632,6 +1669,13 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             }
             branchTree.expandPath(TreePath(node.path))
         }
+        // Always keep the current branch's folder chain expanded, even if the user
+        // had previously collapsed it — otherwise the active branch can hide inside
+        // a collapsed folder with no visual cue it's there.
+        localBranchesNode.depthFirstEnumeration().asSequence()
+            .filterIsInstance<DefaultMutableTreeNode>()
+            .firstOrNull { (it.userObject as? BranchInfo)?.isActive == true }
+            ?.path?.forEach { n -> (n as? DefaultMutableTreeNode)?.let { branchTree.expandPath(TreePath(it.path)) } }
         restoringExpansion = false
     }
 
