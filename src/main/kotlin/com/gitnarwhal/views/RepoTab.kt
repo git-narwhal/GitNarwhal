@@ -211,6 +211,10 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     private var currentDiffFile   = ""
     private var currentDiffStaged = false
     private var showingBlame      = false
+    /** All files backing the current diff view — one entry for a single-file
+     *  selection, several for a multi-file selection. Drives selection restore
+     *  after refreshFileStatus() rebuilds the staged/unstaged lists. */
+    private var currentDiffFiles: List<String> = emptyList()
 
     // ── Conflict banner ───────────────────────────────────────────────────────
     private val conflictBannerLabel = JLabel()
@@ -503,16 +507,15 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
 
         // ── File selection → show diff ────────────────────────────────────────
         stagedList.addListSelectionListener { e ->
-            if (!e.valueIsAdjusting && stagedList.selectedValue != null) {
+            if (!e.valueIsAdjusting && stagedList.selectedValuesList.isNotEmpty()) {
                 unstagedList.clearSelection()
-                showFileDiff(stagedList.selectedValue.substring(2), staged = true)
+                showFilesDiff(stagedList.selectedValuesList, staged = true)
             }
         }
         unstagedList.addListSelectionListener { e ->
-            if (!e.valueIsAdjusting && unstagedList.selectedValue != null) {
+            if (!e.valueIsAdjusting && unstagedList.selectedValuesList.isNotEmpty()) {
                 stagedList.clearSelection()
-                val entry = unstagedList.selectedValue
-                showFileDiff(entry.substring(2), staged = false, isUntracked = entry.startsWith("?"))
+                showFilesDiff(unstagedList.selectedValuesList, staged = false)
             }
         }
 
@@ -854,7 +857,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     }
 
     private fun applyFileStatus(out: String) {
-        val prevFile   = currentDiffFile
+        val prevFiles  = currentDiffFiles
         val prevStaged = currentDiffStaged
 
         stagedModel.clear(); unstagedModel.clear()
@@ -876,19 +879,20 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         stagedHeaderLabel.text   = "Staged files (${stagedModel.size()} files)"
         unstagedHeaderLabel.text = "Unstaged files (${unstagedModel.size()} files)"
 
-        // Restore previous selection if the file is still in any list; otherwise clear diff
-        if (prevFile.isNotBlank()) {
-            val sIdx = (0 until stagedModel.size())  .firstOrNull { stagedModel[it].substring(2)   == prevFile }
-            val uIdx = (0 until unstagedModel.size()).firstOrNull { unstagedModel[it].substring(2) == prevFile }
+        // Restore previous selection (single or multi-file) for whichever of the
+        // selected files still exist; otherwise clear the diff.
+        if (prevFiles.isNotEmpty()) {
+            val sIdxs = prevFiles.mapNotNull { f -> (0 until stagedModel.size())  .firstOrNull { stagedModel[it].substring(2)   == f } }
+            val uIdxs = prevFiles.mapNotNull { f -> (0 until unstagedModel.size()).firstOrNull { unstagedModel[it].substring(2) == f } }
             when {
-                prevStaged  && sIdx != null -> stagedList.selectedIndex   = sIdx
-                !prevStaged && uIdx != null -> unstagedList.selectedIndex = uIdx
-                sIdx != null                -> stagedList.selectedIndex   = sIdx
-                uIdx != null                -> unstagedList.selectedIndex = uIdx
-                else -> { diffScrollPane.setViewportView(null); diffFileNameLabel.text = " "; currentDiffFile = "" }
+                prevStaged  && sIdxs.isNotEmpty() -> stagedList.selectedIndices   = sIdxs.toIntArray()
+                !prevStaged && uIdxs.isNotEmpty() -> unstagedList.selectedIndices = uIdxs.toIntArray()
+                sIdxs.isNotEmpty()                -> stagedList.selectedIndices   = sIdxs.toIntArray()
+                uIdxs.isNotEmpty()                -> unstagedList.selectedIndices = uIdxs.toIntArray()
+                else -> { diffScrollPane.setViewportView(null); diffFileNameLabel.text = " "; currentDiffFile = ""; currentDiffFiles = emptyList() }
             }
         } else {
-            diffScrollPane.setViewportView(null); diffFileNameLabel.text = " "; currentDiffFile = ""
+            diffScrollPane.setViewportView(null); diffFileNameLabel.text = " "; currentDiffFile = ""; currentDiffFiles = emptyList()
         }
 
         // Update conflict banner
@@ -1007,6 +1011,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
 
     private fun showFileDiff(file: String, staged: Boolean, isUntracked: Boolean = false) {
         currentDiffFile   = file
+        currentDiffFiles  = listOf(file)
         currentDiffStaged = staged
         showingBlame      = false
         blameBtn.text      = "Blame"
@@ -1021,6 +1026,54 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             override fun done() {
                 val diffText = try { get() } catch (e: Exception) { return }
                 diffScrollPane.setViewportView(buildDiffView(diffText, staged, file))
+                diffScrollPane.revalidate()
+            }
+        }.execute()
+    }
+
+    /** Dispatches to [showFileDiff] for a single selected file, or builds a
+     *  combined view with every selected file's own hunks (and stage/discard
+     *  buttons) stacked one after another when several files are selected. */
+    private fun showFilesDiff(entries: List<String>, staged: Boolean) {
+        if (entries.size == 1) {
+            val entry = entries[0]
+            showFileDiff(entry.substring(2), staged, isUntracked = entry.startsWith("?"))
+            return
+        }
+        val files = entries.map { it.substring(2) }
+        currentDiffFile    = ""
+        currentDiffFiles   = files
+        currentDiffStaged  = staged
+        showingBlame       = false
+        blameBtn.text      = "Blame"
+        blameBtn.isVisible = false
+        diffFileNameLabel.text = "${files.size} files selected"
+        object : SwingWorker<List<Pair<String, String>>, Void>() {
+            override fun doInBackground(): List<Pair<String, String>> = entries.map { entry ->
+                val file = entry.substring(2)
+                val text = when {
+                    staged                 -> git.diffStaged(file).output
+                    entry.startsWith("?")  -> git.diffUntracked(file).output
+                    else                   -> git.diff(file).output
+                }
+                file to text
+            }
+            override fun done() {
+                val results = try { get() } catch (e: Exception) { return }
+                val bgColor  = UIManager.getColor("EditorPane.background") ?: Color(0x2B, 0x2B, 0x2B)
+                val combined = JPanel().apply {
+                    layout     = BoxLayout(this, BoxLayout.Y_AXIS)
+                    background = bgColor
+                }
+                results.forEach { (file, text) ->
+                    combined.add(JLabel(file).apply {
+                        alignmentX = Component.LEFT_ALIGNMENT
+                        border     = BorderFactory.createEmptyBorder(6, 8, 4, 8)
+                        font       = font.deriveFont(Font.BOLD)
+                    })
+                    combined.add(buildDiffView(text, staged, file).apply { alignmentX = Component.LEFT_ALIGNMENT })
+                }
+                diffScrollPane.setViewportView(combined)
                 diffScrollPane.revalidate()
             }
         }.execute()
