@@ -394,10 +394,6 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         // Min gap between focus-triggered refreshes (ms).
         private const val FOCUS_REFRESH_MS = 3000L
 
-        // Hunks taller than this many visible lines get their own scrollbar and can
-        // flex-grow into leftover diff-viewport space; shorter hunks stay fixed.
-        private const val HUNK_CAP_LINES = 20
-
         // Shared, bounded pool for git fan-out in refresh(). Caps total concurrent git
         // subprocesses across all tabs so refreshes can't spawn an unbounded process storm.
         // Sized to cover refresh()'s 7 parallel reads without serializing a single refresh.
@@ -1098,8 +1094,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         val parsed = parseDiff(diffText)
         val actionVerb = if (staged) "Unstage" else "Stage"
 
-        var gridRow    = 0
-        var hasBigHunk = false
+        var gridRow = 0
         val gbc = GridBagConstraints().apply {
             gridx = 0; weightx = 1.0; fill = GridBagConstraints.BOTH
         }
@@ -1165,41 +1160,30 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 add(hunkLabel,  BorderLayout.WEST)
                 add(hunkBtnRow, BorderLayout.EAST)
             }
-            // Hunks taller than HUNK_CAP_LINES get their own vertical scrollbar and a
-            // GridBag weighty of 1, so any leftover space in the diff viewport is
-            // handed to hunks that actually need to scroll — hunks that already fit
-            // in full are never stretched.
-            val rowHeight  = if (hunk.lines.isNotEmpty()) lineList.preferredSize.height / hunk.lines.size else 16
-            val capHeight  = rowHeight * HUNK_CAP_LINES
-            val isBigHunk  = lineList.preferredSize.height > capHeight
-            if (isBigHunk) hasBigHunk = true
-
+            // Every hunk gets weighty = 1 so leftover viewport space is shared among
+            // all hunks: when the window is short, each hunk shrinks below its
+            // natural height and gains a scrollbar (always visible when needed);
+            // when there's room, each hunk shows all of its lines and stops growing
+            // (capped at its own content height via maximumSize) instead of
+            // stretching into blank padding.
             val lineScroll = JScrollPane(lineList).apply {
                 alignmentX = Component.LEFT_ALIGNMENT
                 border     = BorderFactory.createEmptyBorder()
                 horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED
-                verticalScrollBarPolicy   = if (isBigHunk) JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
-                                            else            JScrollPane.VERTICAL_SCROLLBAR_NEVER
+                verticalScrollBarPolicy   = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
                 viewport.background = bgColor
-                if (isBigHunk) {
-                    preferredSize = Dimension(preferredSize.width, capHeight)
-                    minimumSize   = Dimension(0, capHeight)
-                } else {
-                    maximumSize = Dimension(Int.MAX_VALUE, lineList.preferredSize.height + horizontalScrollBar.preferredSize.height)
-                }
+                val contentHeight = lineList.preferredSize.height + horizontalScrollBar.preferredSize.height
+                preferredSize = Dimension(preferredSize.width, contentHeight)
+                maximumSize   = Dimension(Int.MAX_VALUE, contentHeight)
             }
 
             gbc.gridy = gridRow++; gbc.weighty = 0.0
             container.add(hunkHeaderRow, gbc)
-            gbc.gridy = gridRow++; gbc.weighty = if (isBigHunk) 1.0 else 0.0
+            gbc.gridy = gridRow++; gbc.weighty = 1.0
             container.add(lineScroll, gbc)
             gbc.gridy = gridRow++; gbc.weighty = 0.0
             container.add(Box.createVerticalStrut(4), gbc)
         }
-        // Absorbs leftover viewport space only when no hunk already claims it —
-        // keeps small, fully-visible hunks from being stretched.
-        gbc.gridy = gridRow; gbc.weighty = if (hasBigHunk) 0.0 else 1.0
-        container.add(Box.createGlue(), gbc)
         return container
     }
 
