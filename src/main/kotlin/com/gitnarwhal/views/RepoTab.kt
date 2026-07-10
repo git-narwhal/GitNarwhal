@@ -40,6 +40,7 @@ import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.event.MouseWheelEvent
 import javax.swing.*
 import javax.swing.table.AbstractTableModel
 import javax.swing.tree.DefaultMutableTreeNode
@@ -1175,6 +1176,23 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 val contentHeight = lineList.preferredSize.height + horizontalScrollBar.preferredSize.height
                 preferredSize = Dimension(preferredSize.width, contentHeight)
                 maximumSize   = Dimension(Int.MAX_VALUE, contentHeight)
+            }
+            // A hunk box that fits its content fully has nothing to scroll, but Swing
+            // still routes the wheel event to it first — forward it to the outer diff
+            // scroll pane instead of letting it get swallowed silently.
+            lineScroll.addMouseWheelListener { e: MouseWheelEvent ->
+                val bar = lineScroll.verticalScrollBar
+                if (!bar.isShowing || bar.maximum <= bar.visibleAmount) {
+                    diffScrollPane.dispatchEvent(
+                        SwingUtilities.convertMouseEvent(lineScroll, e, diffScrollPane).let {
+                            MouseWheelEvent(
+                                diffScrollPane, e.id, e.getWhen(), e.modifiersEx,
+                                it.x, it.y, e.clickCount, false,
+                                e.scrollType, e.scrollAmount, e.wheelRotation
+                            )
+                        }
+                    )
+                }
             }
 
             gbc.gridy = gridRow++; gbc.weighty = 0.0
