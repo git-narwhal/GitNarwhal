@@ -1141,7 +1141,10 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                     val r = if (staged) git.applyPatch(patch, cached = true, reverse = true)
                             else        git.applyPatch(patch, cached = true)
                     if (!r.success) showError("$actionVerb failed", r.output)
-                    else { showFileDiff(file, staged); refreshFileStatus() }
+                    // Don't re-show this same (possibly now-empty) side's diff here — the
+                    // file may have moved entirely to the other side or disappeared.
+                    // refreshFileStatus()'s selection-restore picks the correct diff.
+                    else refreshFileStatus()
                 }
                 discardBtn.addActionListener {
                     val selIdx = lineList.selectedIndices.toSet()
@@ -1149,7 +1152,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                                  else buildPatch(parsed.fileHeader, hunk)
                     val r = git.applyPatch(patch, cached = false, reverse = true)
                     if (!r.success) showError("Discard failed", r.output)
-                    else { showFileDiff(file, staged); refreshFileStatus() }
+                    else refreshFileStatus()
                 }
                 if (!staged) hunkBtnRow.add(discardBtn)
                 hunkBtnRow.add(stageBtn)
