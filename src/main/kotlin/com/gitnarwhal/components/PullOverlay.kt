@@ -1,6 +1,7 @@
 package com.gitnarwhal.components
 
 import com.gitnarwhal.backend.Git
+import com.gitnarwhal.utils.Settings
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseMotionAdapter
@@ -26,9 +27,8 @@ class PullOverlay(private val git: Git) : JPanel(null) {
 
     // ── Glass-pane state ──────────────────────────────────────────────────────
 
-    private var savedGlassPane: Component? = null
-    private var rootPane: JRootPane?       = null
-    private var onDone: (() -> Unit)?      = null
+    private var host: JComponent?     = null
+    private var onDone: (() -> Unit)? = null
 
     private val remoteListener = java.awt.event.ActionListener { onRemoteChanged() }
 
@@ -138,12 +138,11 @@ class PullOverlay(private val git: Git) : JPanel(null) {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    fun show(rp: JRootPane, onDone: (() -> Unit)? = null) {
-        this.rootPane = rp
-        this.onDone   = onDone
-        savedGlassPane = rp.glassPane
-        rp.glassPane   = this
-        isVisible      = true
+    fun show(host: JComponent, onDone: (() -> Unit)? = null) {
+        this.host   = host
+        this.onDone = onDone
+        isVisible   = true
+        OverlayHost.attach(host, this)
         repositionCard()
         loadData()
     }
@@ -225,10 +224,10 @@ class PullOverlay(private val git: Git) : JPanel(null) {
         val noCommit = !rebase && !commitNowCk.isSelected
         val noFf    = !rebase && noFfCk.isSelected
         val log     = !rebase && includeLogCk.isSelected
-        val rp      = rootPane ?: return
+        val h       = host ?: return
         dismiss()
         val progress = ProgressOverlay()
-        progress.show(rp, "Pulling…")
+        progress.show(h, "Pulling…", Settings::showOutputPull)
         object : SwingWorker<Boolean, String>() {
             override fun doInBackground(): Boolean =
                 git.pullStream(remote, branch, rebase, noCommit, noFf, log) { publish(it) }.success
@@ -259,10 +258,9 @@ class PullOverlay(private val git: Git) : JPanel(null) {
     }
 
     private fun dismiss() {
-        val rp = rootPane ?: return
-        isVisible    = false
-        rp.glassPane = savedGlassPane
-        savedGlassPane?.isVisible = false
-        rootPane     = null
+        host ?: return
+        isVisible = false
+        OverlayHost.detach(this)
+        host = null
     }
 }

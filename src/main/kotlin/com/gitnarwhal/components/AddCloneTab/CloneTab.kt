@@ -102,7 +102,6 @@ class CloneTab(private val addCloneTab: AddCloneTab) : JPanel(BorderLayout()) {
 
         cloneBtn.isEnabled = false
         val overlay = ProgressOverlay()
-        val rp      = SwingUtilities.getRootPane(this)
         object : SwingWorker<Pair<Boolean, String>, Void>() {
             override fun doInBackground(): Pair<Boolean, String> {
                 val cmd = Git.Static.clone(url, destPath)
@@ -119,7 +118,7 @@ class CloneTab(private val addCloneTab: AddCloneTab) : JPanel(BorderLayout()) {
                 }
             }
         }.execute()
-        overlay.show(rp, "Cloning $url")
+        overlay.show(this, "Cloning $url")
     }
 
     private fun err(msg: String) =

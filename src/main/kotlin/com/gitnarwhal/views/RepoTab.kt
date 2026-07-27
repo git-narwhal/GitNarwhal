@@ -1375,7 +1375,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         }
         val shouldPush = pushImmediatelyCheckBox.isSelected
         val progress = ProgressOverlay()
-        progress.show(SwingUtilities.getRootPane(this), "Committing…")
+        progress.show(this, "Committing…", Settings::showOutputCommit)
         object : SwingWorker<Boolean, String>() {
             override fun doInBackground(): Boolean {
                 val result = when {
@@ -1625,7 +1625,6 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 val remote       = trackParts[0]
                 val remoteBranch = if (trackParts.size > 1) trackParts[1] else branchFullName
                 menu.add(menuItem("Push to $tracking") {
-                    val rp = SwingUtilities.getRootPane(this) ?: return@menuItem
                     val overlay = ProgressOverlay()
                     object : SwingWorker<Boolean, String>() {
                         override fun doInBackground(): Boolean {
@@ -1638,10 +1637,9 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                             overlay.finishStreaming(ok); refresh()
                         }
                     }.execute()
-                    overlay.show(rp, "Pushing to $tracking…")
+                    overlay.show(this, "Pushing to $tracking…", Settings::showOutputPush)
                 })
                 menu.add(menuItem("Pull from $tracking") {
-                    val rp = SwingUtilities.getRootPane(this) ?: return@menuItem
                     val overlay = ProgressOverlay()
                     object : SwingWorker<Boolean, String>() {
                         override fun doInBackground(): Boolean {
@@ -1654,7 +1652,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                             overlay.finishStreaming(ok); refresh()
                         }
                     }.execute()
-                    overlay.show(rp, "Pulling from $tracking…")
+                    overlay.show(this, "Pulling from $tracking…", Settings::showOutputPull)
                 })
             } else {
                 menu.add(menuItem("Push…") { push() })
@@ -2452,8 +2450,10 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     private fun updatePushCheckboxLabel() {
         val r = trackingRemote; val b = trackingBranchRef
         pushImmediatelyCheckBox.text      = if (r != null && b != null)
-            "Push changes immediately to $r/$b" else "Push changes immediately (no upstream)"
-        pushImmediatelyCheckBox.isEnabled = r != null && b != null
+            "Push changes immediately to $r/$b"
+        else
+            "Push changes immediately (will track origin/$currentBranchName)"
+        pushImmediatelyCheckBox.isEnabled = true
     }
 
     fun refreshBranches() {
@@ -2869,13 +2869,12 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         CommitDialog(SwingUtilities.getWindowAncestor(this), git, onSuccess = { refresh() }).isVisible = true
     }
 
-    fun fetch() = runWithProgress("Fetching…") { git.fetch() }
-    fun pull()  = PullOverlay(git).show(SwingUtilities.getRootPane(this)) { refresh() }
-    fun push()  = PushOverlay(git, tabTitle).show(SwingUtilities.getRootPane(this)) { refresh() }
+    fun fetch() = runWithProgress("Fetching…", Settings::showOutputFetch) { git.fetch() }
+    fun pull()  = PullOverlay(git).show(this) { refresh() }
+    fun push()  = PushOverlay(git, tabTitle).show(this) { refresh() }
 
-    private fun runWithProgress(title: String, op: () -> Command) {
+    private fun runWithProgress(title: String, showOutputPref: kotlin.reflect.KMutableProperty0<Boolean>? = null, op: () -> Command) {
         val overlay = ProgressOverlay()
-        val rp      = SwingUtilities.getRootPane(this)
         object : SwingWorker<Command, Void>() {
             override fun doInBackground() = op()
             override fun done() {
@@ -2886,7 +2885,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 refresh()
             }
         }.execute()
-        overlay.show(rp, title)
+        overlay.show(this, title, showOutputPref)
     }
 
     // ── Misc helpers ──────────────────────────────────────────────────────────
@@ -2916,14 +2915,21 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     }
 
     private fun pushToTrackingBranch() {
-        val remote = trackingRemote ?: return push()   // fallback to full dialog if no upstream
-        val branch = trackingBranchRef ?: return push()
-        val local  = currentBranchName
-        val overlay = ProgressOverlay()
+        val local     = currentBranchName
+        val hasUpstream = trackingRemote != null && trackingBranchRef != null
+        val overlay   = ProgressOverlay()
         object : SwingWorker<Boolean, String>() {
+            var targetRemote = trackingRemote ?: ""
+            var targetBranch = trackingBranchRef ?: local
+
             override fun doInBackground(): Boolean {
-                val r = git.pushRefspecStream(remote, local, branch,
-                    force = false, setUpstream = false) { publish(it) }
+                if (!hasUpstream) {
+                    val remotes = git.remoteNames()
+                    targetRemote = if (remotes.contains("origin")) "origin" else remotes.firstOrNull() ?: return false
+                    targetBranch = local
+                }
+                val r = git.pushRefspecStream(targetRemote, local, targetBranch,
+                    force = false, setUpstream = !hasUpstream) { publish(it) }
                 return r.success
             }
             override fun process(chunks: List<String>) { chunks.forEach { overlay.appendOutput(it) } }
@@ -2933,7 +2939,8 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 refresh()
             }
         }.execute()
-        overlay.show(SwingUtilities.getRootPane(this), "Pushing to $remote/$branch…")
+        val title = if (hasUpstream) "Pushing to $trackingRemote/$trackingBranchRef…" else "Pushing to origin/$local…"
+        overlay.show(this, title, Settings::showOutputPush)
     }
 
     fun openTerminal() = Thread {

@@ -50,6 +50,12 @@ object Settings : JSONObject(settingsJSON) {
     // Custom Actions
     var customActions       by JSONSetting(JSONArray())
 
+    // Progress overlay "Show output" checkbox, remembered per operation
+    var showOutputCommit    by JSONSetting(false)
+    var showOutputPush      by JSONSetting(false)
+    var showOutputPull      by JSONSetting(false)
+    var showOutputFetch     by JSONSetting(false)
+
     // UI
     var columnWidths         by JSONSetting(JSONObject().also {
         it.put("graph", 80); it.put("date", 135); it.put("committer", 120); it.put("commit", 70)

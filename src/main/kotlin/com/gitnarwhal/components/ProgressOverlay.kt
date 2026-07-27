@@ -1,5 +1,7 @@
 package com.gitnarwhal.components
 
+import com.gitnarwhal.utils.Settings
+import com.gitnarwhal.utils.save
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -8,14 +10,16 @@ import java.net.URI
 import javax.swing.*
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
+import kotlin.reflect.KMutableProperty0
 
 /**
- * In-app progress overlay: replaces ProgressDialog with a glass-pane overlay
- * anchored to the main window. No separate OS window.
+ * In-app progress overlay: an overlay panel attached directly to a host
+ * component (e.g. a single RepoTab) via [OverlayHost], so it only blocks
+ * input within that tab instead of the whole window.
  *
  * Usage:
  *   val overlay = ProgressOverlay()
- *   overlay.show(SwingUtilities.getRootPane(this), "Pushing…")
+ *   overlay.show(this, "Pushing…")
  *   // on EDT when done:
  *   overlay.finish(output, success)
  */
@@ -71,6 +75,10 @@ class ProgressOverlay : JPanel(null) {
         showOutputCk.addItemListener {
             outputScroll.isVisible = showOutputCk.isSelected
             repositionCard()
+            if (!suppressPersist) {
+                showOutputPref?.set(showOutputCk.isSelected)
+                Settings.save()
+            }
         }
         closeBtn.addActionListener { dismiss() }
 
@@ -97,26 +105,40 @@ class ProgressOverlay : JPanel(null) {
         })
     }
 
-    private var savedGlassPane: Component? = null
-    private var rootPane: JRootPane?       = null
-    private var onDismiss: (() -> Unit)?   = null
+    private var host: JComponent?                          = null
+    private var onDismiss: (() -> Unit)?                    = null
+    private var showOutputPref: KMutableProperty0<Boolean>? = null
+    private var suppressPersist                             = false
 
-    fun show(rp: JRootPane, title: String, onDismiss: (() -> Unit)? = null) {
-        this.rootPane  = rp
-        this.onDismiss = onDismiss
+    private fun setShowOutputSelected(v: Boolean) {
+        suppressPersist = true
+        showOutputCk.isSelected = v
+        suppressPersist = false
+    }
+
+    fun show(
+        host: JComponent,
+        title: String,
+        showOutputPref: KMutableProperty0<Boolean>? = null,
+        onDismiss: (() -> Unit)? = null
+    ) {
+        this.host           = host
+        this.onDismiss      = onDismiss
+        this.showOutputPref = showOutputPref
+
+        val initialShowOutput = showOutputPref?.get() ?: false
 
         statusLabel.text            = title
         progressBar.isIndeterminate = true
         progressBar.foreground      = defaultProgressColor
         closeBtn.isEnabled          = false
-        outputScroll.isVisible    = false
-        showOutputCk.isSelected   = false
+        outputScroll.isVisible    = initialShowOutput
+        setShowOutputSelected(initialShowOutput)
         outputPane.text           = ""
         ansiFg = null; ansiBold = false
 
-        savedGlassPane = rp.glassPane
-        rp.glassPane   = this
-        isVisible      = true
+        isVisible = true
+        OverlayHost.attach(host, this)
         repositionCard()
     }
 
@@ -133,7 +155,7 @@ class ProgressOverlay : JPanel(null) {
 
         if (!success || showOutputCk.isSelected) {
             outputScroll.isVisible  = true
-            showOutputCk.isSelected = true
+            setShowOutputSelected(true)
             repositionCard()
         } else {
             dismiss()
@@ -221,7 +243,7 @@ class ProgressOverlay : JPanel(null) {
         closeBtn.isEnabled = true
         if (!success) {
             outputScroll.isVisible  = true
-            showOutputCk.isSelected = true
+            setShowOutputSelected(true)
             repositionCard()
         } else if (!showOutputCk.isSelected) {
             dismiss()   // success, user didn't pin output → auto-close
@@ -250,11 +272,10 @@ class ProgressOverlay : JPanel(null) {
     }
 
     private fun dismiss() {
-        val rp = rootPane ?: return
-        isVisible    = false
-        rp.glassPane = savedGlassPane
-        savedGlassPane?.isVisible = false
-        rootPane     = null
+        host ?: return
+        isVisible = false
+        OverlayHost.detach(this)
+        host = null
         onDismiss?.invoke()
     }
 }

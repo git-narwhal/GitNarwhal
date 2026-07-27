@@ -1,6 +1,7 @@
 package com.gitnarwhal.components
 
 import com.gitnarwhal.backend.Git
+import com.gitnarwhal.utils.Settings
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseMotionAdapter
@@ -52,9 +53,8 @@ class PushOverlay(private val git: Git, private val repoName: String) : JPanel(n
 
     // ── Glass-pane state ──────────────────────────────────────────────────────
 
-    private var savedGlassPane: Component? = null
-    private var rootPane: JRootPane?       = null
-    private var onDone: (() -> Unit)?      = null
+    private var host: JComponent?     = null
+    private var onDone: (() -> Unit)? = null
 
     private val card: JPanel
 
@@ -160,12 +160,11 @@ class PushOverlay(private val git: Git, private val repoName: String) : JPanel(n
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    fun show(rp: JRootPane, onDone: (() -> Unit)? = null) {
-        this.rootPane = rp
-        this.onDone   = onDone
-        savedGlassPane = rp.glassPane
-        rp.glassPane   = this
-        isVisible      = true
+    fun show(host: JComponent, onDone: (() -> Unit)? = null) {
+        this.host   = host
+        this.onDone = onDone
+        isVisible   = true
+        OverlayHost.attach(host, this)
         repositionCard()
         loadData()
     }
@@ -230,10 +229,10 @@ class PushOverlay(private val git: Git, private val repoName: String) : JPanel(n
         val withTags = pushTagsCk.isSelected
         val toPush   = tableModel.rows.filter { it.push }
         if (toPush.isEmpty()) return
-        val rp = rootPane ?: return
+        val h = host ?: return
         dismiss()
         val progress = ProgressOverlay()
-        progress.show(rp, "Pushing…")
+        progress.show(h, "Pushing…", Settings::showOutputPush)
         object : SwingWorker<Boolean, String>() {
             override fun doInBackground(): Boolean {
                 var ok = true
@@ -275,10 +274,9 @@ class PushOverlay(private val git: Git, private val repoName: String) : JPanel(n
     }
 
     private fun dismiss() {
-        val rp = rootPane ?: return
-        isVisible    = false
-        rp.glassPane = savedGlassPane
-        savedGlassPane?.isVisible = false
-        rootPane     = null
+        host ?: return
+        isVisible = false
+        OverlayHost.detach(this)
+        host = null
     }
 }
