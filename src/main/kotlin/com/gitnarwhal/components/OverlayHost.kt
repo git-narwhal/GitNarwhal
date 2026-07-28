@@ -2,6 +2,8 @@ package com.gitnarwhal.components
 
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
+import java.awt.event.HierarchyEvent
+import java.awt.event.HierarchyListener
 import javax.swing.JComponent
 import javax.swing.JLayeredPane
 import javax.swing.RootPaneContainer
@@ -18,7 +20,12 @@ import javax.swing.SwingUtilities
  */
 object OverlayHost {
 
-    private data class Attachment(val host: JComponent, val layeredPane: JLayeredPane, val listener: ComponentAdapter)
+    private data class Attachment(
+        val host: JComponent,
+        val layeredPane: JLayeredPane,
+        val componentListener: ComponentAdapter,
+        val hierarchyListener: HierarchyListener
+    )
 
     private val attachments = mutableMapOf<JComponent, Attachment>()
 
@@ -40,27 +47,42 @@ object OverlayHost {
             overlay.setBounds(pos.x, pos.y, host.width, host.height)
         }
 
+        // Only block input while the host's tab is actually the one on screen —
+        // JTabbedPane keeps non-selected tabs' components alive but hidden, so
+        // without this the overlay would keep covering the window after switching away.
+        overlay.isVisible = host.isShowing
+
         reposition()
         layeredPane.add(overlay, JLayeredPane.PALETTE_LAYER as Any)
         overlay.revalidate()
         overlay.repaint()
 
-        val listener = object : ComponentAdapter() {
+        val componentListener = object : ComponentAdapter() {
             override fun componentResized(e: ComponentEvent) = reposition()
             override fun componentMoved(e: ComponentEvent)   = reposition()
         }
-        host.addComponentListener(listener)
-        attachments[overlay] = Attachment(host, layeredPane, listener)
+        host.addComponentListener(componentListener)
+
+        val hierarchyListener = HierarchyListener { e ->
+            if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
+                overlay.isVisible = host.isShowing
+                if (host.isShowing) reposition()
+            }
+        }
+        host.addHierarchyListener(hierarchyListener)
+
+        attachments[overlay] = Attachment(host, layeredPane, componentListener, hierarchyListener)
     }
 
     fun detach(overlay: JComponent) {
-        val (host, layeredPane, listener) = attachments.remove(overlay) ?: run {
+        val attachment = attachments.remove(overlay) ?: run {
             (overlay.parent as? JComponent)?.remove(overlay)
             return
         }
-        host.removeComponentListener(listener)
-        layeredPane.remove(overlay)
-        layeredPane.revalidate()
-        layeredPane.repaint()
+        attachment.host.removeComponentListener(attachment.componentListener)
+        attachment.host.removeHierarchyListener(attachment.hierarchyListener)
+        attachment.layeredPane.remove(overlay)
+        attachment.layeredPane.revalidate()
+        attachment.layeredPane.repaint()
     }
 }
