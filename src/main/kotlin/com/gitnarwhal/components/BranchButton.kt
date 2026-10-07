@@ -40,7 +40,7 @@ class BranchButton(
     }
 
     private fun checkout() {
-        val result = repo.git.selectBranch(branchName)
+        val result = repo.git.checkoutSmart(branchName)
         if (result.success) {
             repo.refreshBranches()
         } else {

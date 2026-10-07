@@ -205,6 +205,23 @@ class Git(val repo: String) {
 
     //region branch / checkout
     fun selectBranch(branch: String)        = git("checkout", branch)
+    /**
+     * Checkout [ref]. If it is a remote-tracking branch (e.g. origin/foo) and no local branch
+     * named after it exists, creates a local branch tracking it instead of detaching HEAD.
+     */
+    fun checkoutSmart(ref: String): Command {
+        val remote = remoteNames().firstOrNull { ref.startsWith("$it/") }
+        if (remote != null) {
+            val isRemoteBranch = git("branch", "-r", "--format=%(refname:short)").output
+                .lines().any { it.trim() == ref }
+            if (isRemoteBranch) {
+                val local = ref.removePrefix("$remote/")
+                return if (local in localBranchNames()) git("checkout", local)
+                else git("checkout", "-b", local, "--track", ref)
+            }
+        }
+        return git("checkout", ref)
+    }
     fun createBranch(branch: String)        = git("checkout", "-b", branch)
     fun createBranchFrom(branch: String, startPoint: String) = git("checkout", "-b", branch, startPoint)
     fun deleteBranch(branch: String, force: Boolean = false) =

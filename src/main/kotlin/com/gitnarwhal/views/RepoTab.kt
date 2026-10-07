@@ -1692,7 +1692,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     }
 
     private fun checkoutBranch(branchName: String) {
-        val r = git.selectBranch(branchName)
+        val r = git.checkoutSmart(branchName)
         if (r.success) refreshBranches() else showError("Checkout failed", r.output)
     }
 
