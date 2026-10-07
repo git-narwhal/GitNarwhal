@@ -1170,7 +1170,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 val reverseBtn = JButton("Reverse hunk")
                 reverseBtn.addActionListener {
                     val selIdx = lineList.selectedIndices.toSet()
-                    val patch  = if (hasActionableSelection(lineList)) buildLinePatch(parsed.fileHeader, hunk, selIdx)
+                    val patch  = if (hasActionableSelection(lineList)) buildLinePatch(parsed.fileHeader, hunk, selIdx, reverse = true)
                                  else buildPatch(parsed.fileHeader, hunk)
                     val r = git.applyPatch(patch, cached = false, reverse = true)
                     if (!r.success) showError("Reverse failed", r.output)
@@ -1189,7 +1189,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 }
                 stageBtn.addActionListener {
                     val selIdx = lineList.selectedIndices.toSet()
-                    val patch  = if (hasActionableSelection(lineList)) buildLinePatch(parsed.fileHeader, hunk, selIdx)
+                    val patch  = if (hasActionableSelection(lineList)) buildLinePatch(parsed.fileHeader, hunk, selIdx, reverse = staged)
                                  else buildPatch(parsed.fileHeader, hunk)
                     val r = if (staged) git.applyPatch(patch, cached = true, reverse = true)
                             else        git.applyPatch(patch, cached = true)
@@ -1201,7 +1201,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 }
                 discardBtn.addActionListener {
                     val selIdx = lineList.selectedIndices.toSet()
-                    val patch  = if (hasActionableSelection(lineList)) buildLinePatch(parsed.fileHeader, hunk, selIdx)
+                    val patch  = if (hasActionableSelection(lineList)) buildLinePatch(parsed.fileHeader, hunk, selIdx, reverse = true)
                                  else buildPatch(parsed.fileHeader, hunk)
                     val r = git.applyPatch(patch, cached = false, reverse = true)
                     if (!r.success) showError("Discard failed", r.output)
@@ -1331,37 +1331,54 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
 
     /**
      * Build a minimal valid unified diff from only the selected lines.
-     * Unselected `-` lines become context (don't stage the removal).
-     * Unselected `+` lines are dropped (don't stage the addition).
+     *
+     * Forward apply (stage): unselected `-` lines become context, unselected `+` lines are dropped.
+     * [reverse] apply (unstage / discard / reverse commit): the patch is applied with `--reverse`
+     * against the state that already contains the `+` lines, so it is the opposite —
+     * unselected `+` lines become context, unselected `-` lines are dropped.
      */
-    private fun buildLinePatch(fileHeader: List<String>, hunk: DiffHunk, selectedIndices: Set<Int>): String {
+    private fun buildLinePatch(
+        fileHeader: List<String>, hunk: DiffHunk, selectedIndices: Set<Int>, reverse: Boolean = false
+    ): String {
         val headerMatch = Regex("""@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@""").find(hunk.header)
         val oldStart    = headerMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
         val newStart    = headerMatch?.groupValues?.get(2)?.toIntOrNull() ?: 1
+        // git locates the hunk on the side it applies to: old when forward, new when reversed.
+        val start       = if (reverse) newStart else oldStart
 
         val patchLines  = mutableListOf<String>()
         var newOldCount = 0
         var newNewCount = 0
+        var lastKept    = false
 
         for ((i, line) in hunk.lines.withIndex()) {
             if (i == 0) continue  // skip original @@ header; rebuild below
             val selected = i in selectedIndices
+            val isAdd = line.startsWith("+") && !line.startsWith("+++")
+            val isDel = line.startsWith("-") && !line.startsWith("---")
             when {
-                line.startsWith("+") && !line.startsWith("+++") -> {
-                    if (selected) { patchLines += line; newNewCount++ }
-                    // unselected + → omit
+                line.startsWith("\\") -> {
+                    // "\ No newline at end of file" belongs to the previous line only
+                    if (lastKept) patchLines += line
                 }
-                line.startsWith("-") && !line.startsWith("---") -> {
-                    if (selected) { patchLines += line; newOldCount++ }
-                    else          { patchLines += " ${line.drop(1)}"; newOldCount++; newNewCount++ }
+                isAdd || isDel -> {
+                    val keepAsChange = selected
+                    // the side that is NOT affected by this patch keeps the line as context
+                    val keepAsContext = !selected && (if (reverse) isAdd else isDel)
+                    when {
+                        keepAsChange  -> { patchLines += line; if (isAdd) newNewCount++ else newOldCount++; lastKept = true }
+                        keepAsContext -> { patchLines += " ${line.drop(1)}"; newOldCount++; newNewCount++; lastKept = true }
+                        else          -> lastKept = false
+                    }
                 }
-                else -> { patchLines += line; newOldCount++; newNewCount++ }
+                line.isEmpty() -> lastKept = false  // trailing artifact of splitting the diff text
+                else -> { patchLines += line; newOldCount++; newNewCount++; lastKept = true }
             }
         }
 
         return buildString {
             fileHeader.forEach { appendLine(it) }
-            appendLine("@@ -$oldStart,$newOldCount +$newStart,$newNewCount @@")
+            appendLine("@@ -$start,$newOldCount +$start,$newNewCount @@")
             patchLines.forEach { appendLine(it) }
         }
     }
