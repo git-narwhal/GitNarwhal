@@ -867,4 +867,59 @@ class GitTest {
             wtDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `fileVersions handles modified added and deleted files in each context`() {
+        writeFile("pic.png", "v1"); git.add("pic.png"); git.commit("add pic")
+        val c1 = git.revParse("HEAD").output.trim()
+
+        // unstaged modification: index -> working tree
+        writeFile("pic.png", "v2")
+        git.fileVersions("pic.png", staged = false).let {
+            assertEquals("v1", String(it.first!!)); assertEquals("v2", String(it.second!!))
+        }
+        // staged modification: HEAD -> index
+        git.add("pic.png")
+        git.fileVersions("pic.png", staged = true).let {
+            assertEquals("v1", String(it.first!!)); assertEquals("v2", String(it.second!!))
+        }
+        git.commit("modify pic")
+        val c2 = git.revParse("HEAD").output.trim()
+
+        // commit contexts: added then modified then deleted
+        git.fileVersions("pic.png", staged = false, commit = c1).let {
+            assertNull(it.first, "added in c1: no old side"); assertEquals("v1", String(it.second!!))
+        }
+        git.fileVersions("pic.png", staged = false, commit = c2).let {
+            assertEquals("v1", String(it.first!!)); assertEquals("v2", String(it.second!!))
+        }
+        // unstaged deletion: index -> missing
+        deleteFile("pic.png")
+        git.fileVersions("pic.png", staged = false).let {
+            assertEquals("v2", String(it.first!!)); assertNull(it.second)
+        }
+        // staged deletion: HEAD -> missing from index
+        git.add("pic.png")
+        git.fileVersions("pic.png", staged = true).let {
+            assertEquals("v2", String(it.first!!)); assertNull(it.second)
+        }
+        git.commit("delete pic")
+        val c3 = git.revParse("HEAD").output.trim()
+        git.fileVersions("pic.png", staged = false, commit = c3).let {
+            assertEquals("v2", String(it.first!!)); assertNull(it.second, "deleted in c3: no new side")
+        }
+        // untracked file: no old side, new from disk
+        writeFile("new.png", "n")
+        git.fileVersions("new.png", staged = false).let {
+            assertNull(it.first); assertEquals("n", String(it.second!!))
+        }
+        deleteFile("new.png")
+    }
+
+    @Test
+    fun `blob returns raw bytes and null for unknown path`() {
+        assertNotNull(git.blob("HEAD", "README.md"))
+        assertNull(git.blob("HEAD", "does-not-exist.bin"))
+        assertNull(git.workingFile("does-not-exist.bin"))
+    }
 }

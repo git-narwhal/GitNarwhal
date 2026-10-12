@@ -67,6 +67,16 @@ class Command(vararg command: String, path: String = "./") {
         return this
     }
 
+    /** Runs the command and returns raw stdout bytes (stderr discarded), or null on non-zero exit. */
+    fun executeBytes(): ByteArray? {
+        val process = ProcessBuilder(commandParts).directory(workingDirFile)
+            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val bytes = process.inputStream.readAllBytes()
+        code = process.waitFor()
+        success = code == 0
+        return if (success) bytes else null
+    }
+
     operator fun plus(parameters: String): Command {
         //returns a new command with appended parameters
         return Command(

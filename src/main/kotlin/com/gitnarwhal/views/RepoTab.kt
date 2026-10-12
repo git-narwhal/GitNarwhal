@@ -7,10 +7,12 @@ import com.gitnarwhal.backend.RefType
 import com.gitnarwhal.components.CommitDataPanel
 import com.gitnarwhal.components.CommitDescriptionCell
 import com.gitnarwhal.components.CommitGraphCell
+import com.gitnarwhal.components.ImageDiffPanel
 import com.gitnarwhal.components.ProgressOverlay
 import com.gitnarwhal.components.PullOverlay
 import com.gitnarwhal.components.PushOverlay
 import com.gitnarwhal.utils.Command
+import com.gitnarwhal.utils.ImageDiff
 import com.gitnarwhal.utils.NativeFileChooser
 import com.gitnarwhal.utils.OS
 import com.gitnarwhal.utils.Settings
@@ -490,15 +492,18 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
 
     private fun showCommitFileDiff(commit: Commit, fileLine: String) {
         val path = fileLine.substring(2).trim()
-        object : SwingWorker<String, Void>() {
-            override fun doInBackground() = git.showFileDiff(commit.hash, path).output
-            override fun done() {
-                val diff = try { get() } catch (_: Exception) { return }
-                commitDiffScroll.setViewportView(
-                    buildDiffView(diff, staged = false, file = path, commitHash = commit.hash))
-                commitDiffScroll.revalidate()
-            }
-        }.execute()
+        val textDiff = {
+            object : SwingWorker<String, Void>() {
+                override fun doInBackground() = git.showFileDiff(commit.hash, path).output
+                override fun done() {
+                    val diff = try { get() } catch (_: Exception) { return }
+                    commitDiffScroll.setViewportView(
+                        buildDiffView(diff, staged = false, file = path, commitHash = commit.hash))
+                    commitDiffScroll.revalidate()
+                }
+            }.execute()
+        }
+        if (ImageDiff.isImagePath(path)) showImageDiff(path, false, commit.hash, commitDiffScroll, textDiff) else textDiff()
     }
 
     private fun buildFileStatusPanel(): JComponent {
@@ -1017,16 +1022,37 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         blameBtn.text      = "Blame"
         blameBtn.isVisible = !isUntracked
         diffFileNameLabel.text = file
-        object : SwingWorker<String, Void>() {
-            override fun doInBackground(): String = when {
-                staged      -> git.diffStaged(file).output
-                isUntracked -> git.diffUntracked(file).output   // exit 1 is normal; always use .output
-                else        -> git.diff(file).output
-            }
+        val textDiff = {
+            object : SwingWorker<String, Void>() {
+                override fun doInBackground(): String = when {
+                    staged      -> git.diffStaged(file).output
+                    isUntracked -> git.diffUntracked(file).output   // exit 1 is normal; always use .output
+                    else        -> git.diff(file).output
+                }
+                override fun done() {
+                    val diffText = try { get() } catch (e: Exception) { return }
+                    diffScrollPane.setViewportView(buildDiffView(diffText, staged, file))
+                    diffScrollPane.revalidate()
+                }
+            }.execute()
+        }
+        if (ImageDiff.isImagePath(file)) showImageDiff(file, staged, null, diffScrollPane, textDiff) else textDiff()
+    }
+
+    /** Shows old/new image versions side by side (also for added/deleted files) in [target];
+     *  calls [fallback] if neither side is a decodable image. */
+    private fun showImageDiff(
+        file: String, staged: Boolean, commitHash: String?,
+        target: JScrollPane, fallback: () -> Unit
+    ) {
+        object : SwingWorker<Pair<ByteArray?, ByteArray?>?, Void>() {
+            override fun doInBackground() =
+                git.fileVersions(file, staged, commitHash).takeIf { (o, n) -> ImageDiff.canShow(o, n) }
             override fun done() {
-                val diffText = try { get() } catch (e: Exception) { return }
-                diffScrollPane.setViewportView(buildDiffView(diffText, staged, file))
-                diffScrollPane.revalidate()
+                val versions = try { get() } catch (e: Exception) { null }
+                if (versions == null) { fallback(); return }
+                target.setViewportView(ImageDiffPanel(versions.first, versions.second))
+                target.revalidate()
             }
         }.execute()
     }
@@ -1048,9 +1074,13 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         blameBtn.text      = "Blame"
         blameBtn.isVisible = false
         diffFileNameLabel.text = "${files.size} files selected"
-        object : SwingWorker<List<Pair<String, String>>, Void>() {
-            override fun doInBackground(): List<Pair<String, String>> = entries.map { entry ->
+        object : SwingWorker<List<Pair<String, Any>>, Void>() {
+            override fun doInBackground(): List<Pair<String, Any>> = entries.map { entry ->
                 val file = entry.substring(2)
+                if (ImageDiff.isImagePath(file)) {
+                    val v = git.fileVersions(file, staged)
+                    if (ImageDiff.canShow(v.first, v.second)) return@map file to v
+                }
                 val text = when {
                     staged                 -> git.diffStaged(file).output
                     entry.startsWith("?")  -> git.diffUntracked(file).output
@@ -1071,7 +1101,10 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                         border     = BorderFactory.createEmptyBorder(6, 8, 4, 8)
                         font       = font.deriveFont(Font.BOLD)
                     })
-                    combined.add(buildDiffView(text, staged, file).apply { alignmentX = Component.LEFT_ALIGNMENT })
+                    @Suppress("UNCHECKED_CAST")
+                    val view: JComponent = if (text is String) buildDiffView(text, staged, file)
+                    else (text as Pair<ByteArray?, ByteArray?>).let { ImageDiffPanel(it.first, it.second) }
+                    combined.add(view.apply { alignmentX = Component.LEFT_ALIGNMENT })
                 }
                 diffScrollPane.setViewportView(combined)
                 diffScrollPane.revalidate()

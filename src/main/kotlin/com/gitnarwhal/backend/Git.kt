@@ -180,6 +180,28 @@ class Git(val repo: String) {
         args += path
         return git(*args.toTypedArray())
     }
+    /** Raw content of [path] at [rev] ("HEAD", a hash, …) or from the index when [rev] is empty.
+     *  Null when the file does not exist there (e.g. added/deleted/untracked). */
+    fun blob(rev: String, path: String): ByteArray? =
+        Command(GIT, "cat-file", "blob", "$rev:$path", path = repo).executeBytes()
+
+    /** Raw content of [path] in the working tree, or null if missing. */
+    fun workingFile(path: String): ByteArray? =
+        java.io.File(repo, path).takeIf { it.isFile }?.readBytes()
+
+    /**
+     * Old/new versions of [path] for an image diff; null on a side means the file does not
+     * exist there (added → old null, deleted → new null).
+     *  - [commit] given:  commit^ → commit
+     *  - [staged]:        HEAD → index
+     *  - otherwise:       index → working tree
+     */
+    fun fileVersions(path: String, staged: Boolean, commit: String? = null): Pair<ByteArray?, ByteArray?> = when {
+        commit != null -> blob("$commit^", path) to blob(commit, path)
+        staged         -> blob("HEAD", path) to blob("", path)
+        else           -> blob("", path) to workingFile(path)
+    }
+
     fun remoteUrl(remote: String = "origin") = git("config", "--get", "remote.$remote.url")
     fun remoteList()                         = git("remote")
     fun remoteAdd(name: String, url: String) = git("remote", "add", name, url)
