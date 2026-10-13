@@ -354,6 +354,16 @@ class Git(val repo: String) {
         return com.gitnarwhal.utils.Command(GIT, "status", "--porcelain", path = dir.absolutePath)
             .execute().output.isNotBlank()
     }
+    /**
+     * True if [relPath] (relative to this repo, as reported by `git status`) is an
+     * initialized submodule, i.e. a directory with its own `.git` (file or dir).
+     */
+    fun isSubmodulePath(relPath: String): Boolean {
+        val p = relPath.trim().trim('"').trimEnd('/')
+        if (p.isEmpty() || p == ".") return false
+        val dir = java.io.File(repo, p)
+        return dir.isDirectory && java.io.File(dir, ".git").exists()
+    }
     fun stashList()                       = git("stash", "list")
     fun stashPush(message: String? = null) =
         if (message != null) git("stash", "push", "-m", message) else git("stash", "push")

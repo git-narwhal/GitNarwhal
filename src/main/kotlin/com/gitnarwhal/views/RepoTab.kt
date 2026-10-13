@@ -524,6 +524,21 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             }
         }
 
+        // ── Double-click on a modified submodule → open it in a new tab ───────
+        for (list in listOf(stagedList, unstagedList)) {
+            list.addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                    if (e.clickCount != 2 || !SwingUtilities.isLeftMouseButton(e)) return
+                    val idx = list.locationToIndex(e.point)
+                    if (idx < 0 || !list.getCellBounds(idx, idx).contains(e.point)) return
+                    val entry = list.model.getElementAt(idx)
+                    if (entry[0] != 'M') return
+                    val rel = entry.substring(2).trim('"').trimEnd('/')
+                    if (git.isSubmodulePath(rel)) openSubmoduleTab(rel, rel.substringAfterLast('/'))
+                }
+            })
+        }
+
         // ── Staged panel ──────────────────────────────────────────────────────
         val unstageAllBtn      = JButton("Unstage All")
         val unstageSelectedBtn = JButton("Unstage Selected")
@@ -2342,15 +2357,17 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         }
     }
 
-    private fun openSubmoduleTab(info: SubmoduleInfo) {
-        val subPath  = java.io.File(git.repo, info.path).canonicalPath
+    private fun openSubmoduleTab(info: SubmoduleInfo) = openSubmoduleTab(info.path, info.name)
+
+    private fun openSubmoduleTab(relPath: String, name: String) {
+        val subPath  = java.io.File(git.repo, relPath).canonicalPath
         val mainView = javax.swing.SwingUtilities.getAncestorOfClass(
             MainView::class.java, this) as? MainView ?: return
         val existing = (0 until mainView.tabPane.tabCount)
             .mapNotNull { mainView.tabPane.getComponentAt(it) as? RepoTab }
             .firstOrNull { java.io.File(it.path).canonicalPath == subPath }
         if (existing != null) mainView.selectTab(existing)
-        else mainView.addTab(RepoTab(subPath, info.name))
+        else mainView.addTab(RepoTab(subPath, name))
     }
 
     /** Fetches submodule status in background WITHOUT blocking or showing the loading bar. */

@@ -781,6 +781,21 @@ class GitTest {
         deleteFile("dirty-probe.txt")
     }
 
+    @Test @Order(142)
+    fun `isSubmodulePath detects directories with their own git dir`() {
+        assertFalse(git.isSubmodulePath(""), "empty path is not a submodule")
+        assertFalse(git.isSubmodulePath("."), "repo root is not a submodule")
+        assertFalse(git.isSubmodulePath("README.md"), "regular file is not a submodule")
+        assertFalse(git.isSubmodulePath("no-such-dir"), "missing path is not a submodule")
+        File(repoDir, "fake-sub").mkdirs()
+        writeFile("fake-sub/.git", "gitdir: ../.git/modules/fake-sub\n")
+        assertTrue(git.isSubmodulePath("fake-sub"), "dir with .git file is a submodule")
+        assertTrue(git.isSubmodulePath("fake-sub/"), "trailing slash tolerated")
+        deleteFile("fake-sub/.git")
+        assertFalse(git.isSubmodulePath("fake-sub"), "plain dir is not a submodule")
+        File(repoDir, "fake-sub").delete()
+    }
+
     @Test @Order(137)
     fun `logFile returns history for a specific file`() {
         val r = git.logFile("README.md")
