@@ -253,7 +253,7 @@ class AddCloneTab(val mainView: MainView) : JPanel(BorderLayout()) {
                     visible += item
                     skipFolderId = if (item.expanded) null else item.id
                 }
-                item is RepoEntry && item.folderId == skipFolderId -> { /* skip — folder collapsed */ }
+                item is RepoEntry && skipFolderId != null && item.folderId == skipFolderId -> { /* skip — folder collapsed */ }
                 else -> visible += item
             }
         }
