@@ -2506,7 +2506,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             .mapNotNull { mv.tabPane.getComponentAt(it) as? RepoTab }
             .firstOrNull { java.io.File(it.path).canonicalPath == canon }
         if (existing != null) mv.selectTab(existing)
-        else mv.addTab(RepoTab(wt.path, branchName))
+        else mv.addTab(RepoTab(java.io.File(wt.path).absolutePath, branchName))
     }
 
     // The global loading bar was removed in favour of per-section bars; these remain

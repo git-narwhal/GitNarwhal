@@ -166,7 +166,7 @@ class MainView : JPanel(BorderLayout()) {
         if (save) {
             Settings.openTabs.put(JSONObject().apply {
                 put("name", repo.tabTitle)
-                put("path", repo.path)
+                put("path", java.io.File(repo.path).absolutePath)
             })
             Settings.save()
         }
@@ -183,7 +183,8 @@ class MainView : JPanel(BorderLayout()) {
         try {
             tabPane.removeTabAt(idx)
             if (component is RepoTab) {
-                Settings.openTabs.removeAll { (it as JSONObject).getString("path") == component.path }
+                val closed = java.io.File(component.path).absoluteFile.toPath().normalize()
+                Settings.openTabs.removeAll { java.io.File((it as JSONObject).getString("path")).absoluteFile.toPath().normalize() == closed }
                 Settings.save()
             }
 
