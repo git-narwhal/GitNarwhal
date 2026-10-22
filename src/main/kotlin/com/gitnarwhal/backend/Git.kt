@@ -206,6 +206,7 @@ class Git(val repo: String) {
     fun remoteList()                         = git("remote")
     fun remoteAdd(name: String, url: String) = git("remote", "add", name, url)
     fun remoteSetUrl(name: String, url: String) = git("remote", "set-url", name, url)
+    fun remoteRename(old: String, new: String) = git("remote", "rename", old, new)
     fun remoteRemove(name: String)           = git("remote", "remove", name)
     fun configGet(key: String)               = git("config", "--get", key)
     fun configGetGlobal(key: String)         = git("config", "--global", "--get", key)

@@ -536,13 +536,22 @@ class GitTest {
     }
 
     @Test @Order(83)
+    fun `remoteRename renames the remote keeping its URL`() {
+        val r = git.remoteRename("fakremote", "fakremote2")
+        assertTrue(r.success, "remoteRename should succeed: ${r.output}")
+        assertFalse(git.remoteNames().contains("fakremote"))
+        assertEquals("https://example.com/changed.git", git.remoteUrl("fakremote2").output.trim())
+        assertTrue(git.remoteRename("fakremote2", "fakremote").success)
+    }
+
+    @Test @Order(84)
     fun `remoteRemove deletes the remote`() {
         val r = git.remoteRemove("fakremote")
         assertTrue(r.success)
         assertFalse(git.remoteNames().contains("fakremote"))
     }
 
-    @Test @Order(84)
+    @Test @Order(85)
     fun `remoteUrl returns failure for nonexistent remote`() {
         val r = git.remoteUrl("nonexistent")
         assertFalse(r.success)

@@ -1,6 +1,7 @@
 package com.gitnarwhal.views
 
 import com.gitnarwhal.backend.Git
+import com.gitnarwhal.utils.Command
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Desktop
@@ -19,9 +20,16 @@ class RepoSettingsDialog(private val git: Git, owner: Window?) :
     JDialog(owner, "Repository Settings", ModalityType.APPLICATION_MODAL) {
 
     // ── Remote data ───────────────────────────────────────────────────────────
-    private data class RemoteEntry(var name: String, var url: String)
+    // originalName/originalUrl are null for remotes added in this dialog
+    private data class RemoteEntry(
+        var name: String,
+        var url: String,
+        val originalName: String? = null,
+        val originalUrl: String? = null,
+    )
 
     private val remotes = mutableListOf<RemoteEntry>()
+    private val removedRemoteNames = mutableSetOf<String>()
 
     private val remotesModel = object : AbstractTableModel() {
         private val cols = arrayOf("Name", "Path")
@@ -127,7 +135,7 @@ class RepoSettingsDialog(private val git: Git, owner: Window?) :
             JOptionPane.YES_NO_OPTION
         )
         if (confirm == JOptionPane.YES_OPTION) {
-            remotes.removeAt(row)
+            remotes.removeAt(row).originalName?.let { removedRemoteNames += it }
             remotesModel.fireTableRowsDeleted(row, row)
         }
     }
@@ -235,7 +243,7 @@ class RepoSettingsDialog(private val git: Git, owner: Window?) :
         val names = git.remoteList().output.lines().filter { it.isNotBlank() }
         for (name in names) {
             val url = git.remoteUrl(name).output.trim()
-            remotes.add(RemoteEntry(name, url))
+            remotes.add(RemoteEntry(name, url, originalName = name, originalUrl = url))
         }
         remotesModel.fireTableDataChanged()
     }
@@ -254,21 +262,26 @@ class RepoSettingsDialog(private val git: Git, owner: Window?) :
         updateUserFieldsEnabled()
     }
 
-    private fun saveAndClose(originalRemotes: List<RemoteEntry>) {
-        // Apply remote diffs
-        val originalNames = originalRemotes.map { it.name }.toSet()
-        val currentNames  = remotes.map { it.name }.toSet()
+    private fun saveAndClose() {
+        // Apply remote diffs (entries track their original name/url, so edits and renames are detected)
+        val errors = mutableListOf<String>()
+        fun run(c: Command) { if (!c.success) errors += c.output.trim() }
 
         // Removed
-        for (name in originalNames - currentNames) git.remoteRemove(name)
+        for (name in removedRemoteNames) run(git.remoteRemove(name))
+
+        // Renamed / URL changed
+        for (r in remotes) {
+            val origName = r.originalName ?: continue
+            if (r.name != origName) run(git.remoteRename(origName, r.name))
+            if (r.url != r.originalUrl) run(git.remoteSetUrl(r.name, r.url))
+        }
 
         // Added
-        for (r in remotes.filter { it.name !in originalNames }) git.remoteAdd(r.name, r.url)
+        for (r in remotes.filter { it.originalName == null }) run(git.remoteAdd(r.name, r.url))
 
-        // URL changed (same name, different url)
-        for (orig in originalRemotes) {
-            val cur = remotes.find { it.name == orig.name } ?: continue
-            if (cur.url != orig.url) git.remoteSetUrl(cur.name, cur.url)
+        if (errors.isNotEmpty()) {
+            JOptionPane.showMessageDialog(this, errors.joinToString("\n"), "Remote update failed", JOptionPane.ERROR_MESSAGE)
         }
 
         // IDE command (per-repo)
@@ -302,12 +315,9 @@ class RepoSettingsDialog(private val git: Git, owner: Window?) :
             }
         }
 
-        // Snapshot originals for diff on OK
-        val originalRemotes = remotes.map { it.copy() }
-
         val okBtn     = JButton("OK")
         val cancelBtn = JButton("Cancel")
-        okBtn.addActionListener     { saveAndClose(originalRemotes) }
+        okBtn.addActionListener     { saveAndClose() }
         cancelBtn.addActionListener { dispose() }
 
         val rightBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
