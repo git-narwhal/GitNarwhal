@@ -2757,18 +2757,21 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 // chain then merges into HEAD from its shifted lane.
                 fun shift(lines: List<Pair<Int, Color>>) =
                     lines.map { (l, c) -> (if (l >= headLane) l + 1 else l) to c }
+                // From HEAD's first child down to HEAD, headLane is the lane waiting for
+                // HEAD. Shifting it would leave a dangling line at headLane + 1 (nothing
+                // ever lands there), so drop it: the grey connector now owns headLane and
+                // HEAD's children fork straight into it.
+                val claimRow = (0 until headIdx).firstOrNull { head in localList[it].parents } ?: headIdx
                 for (i in 0 until headIdx) {
                     val c = localList[i]
+                    val isChild = head in c.parents
                     if (c.x >= headLane) c.x += 1
-                    c.graphTopLines    = shift(c.graphTopLines)
-                    c.graphBottomLines = shift(c.graphBottomLines)
-                    c.graphForkLines   = shift(c.graphForkLines)
-                    // Direct children of HEAD now fork down-left into headLane;
+                    c.graphTopLines    = shift(c.graphTopLines.filterNot { i > claimRow && it.first == headLane })
+                    c.graphBottomLines = shift(c.graphBottomLines.filterNot { i >= claimRow && it.first == headLane })
+                    c.graphForkLines   = shift(c.graphForkLines.filterNot { isChild && it.first == headLane })
+                    // Direct children of HEAD fork down-left into headLane in their own color;
                     // everyone else just lets the grey connector pass straight through.
-                    if (head in c.parents) {
-                        c.graphForkLines   = c.graphForkLines + (headLane to grey)
-                        c.graphBottomLines = c.graphBottomLines.filterNot { it.first == c.x }
-                    }
+                    if (isChild) c.graphForkLines = c.graphForkLines + (headLane to c.color)
                     c.graphTopLines    = c.graphTopLines    + (headLane to grey)
                     c.graphBottomLines = c.graphBottomLines + (headLane to grey)
                 }
