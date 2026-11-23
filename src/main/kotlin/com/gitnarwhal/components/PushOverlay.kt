@@ -180,7 +180,7 @@ class PushOverlay(private val git: Git, private val repoName: String) : JPanel(n
         object : SwingWorker<LoadResult, Void>() {
             override fun doInBackground(): LoadResult {
                 val remotes  = git.remoteNames().ifEmpty { listOf("origin") }
-                val remote   = remotes.first()
+                val remote   = if ("origin" in remotes) "origin" else remotes.first()
                 return LoadResult(
                     remotes, remote,
                     git.remoteUrl(remote).output.trim(),
@@ -192,6 +192,7 @@ class PushOverlay(private val git: Git, private val repoName: String) : JPanel(n
             override fun done() {
                 val d = try { get() } catch (e: Exception) { return }
                 remoteCombo.removeAllItems(); d.remotes.forEach { remoteCombo.addItem(it) }
+                remoteCombo.selectedItem = d.defaultRemote
                 urlField.text = d.url
                 branchEditor.removeAllItems(); d.remoteBranches.forEach { branchEditor.addItem(it) }
                 tableModel.rows.clear()
