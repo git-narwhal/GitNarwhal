@@ -161,14 +161,18 @@ class PullOverlay(private val git: Git) : JPanel(null) {
                 val current = git.currentBranch().output.trim()
                 val tracking = git.trackingBranch(current)
                 val remotes  = git.remoteNames().ifEmpty { listOf("origin") }
-                val remote   = tracking?.first ?: remotes.first()
+                // always default to origin, never the tracking remote or others
+                val remote   = if ("origin" in remotes) "origin" else remotes.first()
+                val remoteBranches = git.remoteBranchNames(remote)
+                val trackBranch = if (tracking?.first == remote) tracking.second
+                                  else current.takeIf { it in remoteBranches }
                 return LoadResult(
                     remotes,
                     git.remoteUrl(remote).output.trim(),
-                    git.remoteBranchNames(remote),
+                    remoteBranches,
                     current,
-                    tracking?.first,
-                    tracking?.second
+                    remote,
+                    trackBranch
                 )
             }
             override fun done() {
