@@ -658,8 +658,12 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                     val files = unstagedList.selectedValuesList
                     if (files.isEmpty()) return@addActionListener
                     val names = files.joinToString("\n") { it.substring(2) }
-                    if (!confirm("Discard changes to:\n$names\n\nThis cannot be undone.")) return@addActionListener
-                    files.forEach { git.restore(it.substring(2)) }
+                    val deletes = files.any { it.startsWith("? ") }
+                    val msg = "Discard changes to:\n$names\n\n" +
+                        (if (deletes) "Untracked files will be DELETED from disk.\n" else "") + "This cannot be undone."
+                    if (!confirm(msg)) return@addActionListener
+                    val errors = files.mapNotNull { git.discard(it.substring(2), untracked = it.startsWith("? ")) }
+                    if (errors.isNotEmpty()) showError("Discard failed", errors.joinToString("\n"))
                     refreshFileStatus()
                 }
             })

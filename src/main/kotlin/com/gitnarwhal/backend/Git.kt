@@ -257,6 +257,17 @@ class Git(val repo: String) {
     fun add(fileName: String)     = git("add", "--", fileName)
     fun addAll()                  = git("add", "-A")
     fun restore(fileName: String)      = git("restore", "--", fileName)
+
+    /**
+     * Discards working-tree changes to [fileName]. Untracked files (unknown to git, so
+     * `git restore` can't touch them) are deleted from disk; tracked ones are restored.
+     * @return null on success, otherwise the error message.
+     */
+    fun discard(fileName: String, untracked: Boolean): String? {
+        if (!untracked) return restore(fileName).let { if (it.success) null else it.output }
+        val f = java.io.File(repo, fileName.trim().trim('"'))
+        return if (!f.exists() || f.deleteRecursively()) null else "Could not delete $fileName"
+    }
     fun unstage(fileName: String)      = git("restore", "--staged", "--", fileName)
     fun checkoutOurs(fileName: String) = git("checkout", "--ours",   "--", fileName)
     fun checkoutTheirs(fileName: String) = git("checkout", "--theirs", "--", fileName)

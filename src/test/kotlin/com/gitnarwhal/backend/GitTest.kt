@@ -946,4 +946,23 @@ class GitTest {
         assertNull(git.blob("HEAD", "does-not-exist.bin"))
         assertNull(git.workingFile("does-not-exist.bin"))
     }
+
+    // ── Discard ───────────────────────────────────────────────────────────
+
+    @Test @Order(160)
+    fun `discard deletes untracked file and restores tracked one`() {
+        writeFile("untracked-discard.txt", "junk")
+        assertNull(git.discard("untracked-discard.txt", untracked = true))
+        assertFalse(File(repoDir, "untracked-discard.txt").exists())
+
+        val original = File(repoDir, "README.md").readText()
+        writeFile("README.md", "changed")
+        assertNull(git.discard("README.md", untracked = false))
+        assertEquals(original, File(repoDir, "README.md").readText())
+
+        // untracked path that is already gone: nothing to do, no error
+        assertNull(git.discard("never-existed.txt", untracked = true))
+        // tracked restore of an unknown path reports git's error
+        assertNotNull(git.discard("never-existed.txt", untracked = false))
+    }
 }
