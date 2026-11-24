@@ -965,4 +965,40 @@ class GitTest {
         // tracked restore of an unknown path reports git's error
         assertNotNull(git.discard("never-existed.txt", untracked = false))
     }
+
+    // ── Fast staging / two-phase status ───────────────────────────────────
+
+    @Test @Order(161)
+    fun `stagePaths and unstagePaths act on literal paths only`() {
+        File(repoDir, "[PMM]").mkdirs()
+        writeFile("[PMM]/a.txt", "literal")
+        writeFile("P", "would match the [PMM] glob")   // must NOT be staged
+        assertNull(git.stagePaths(emptyList()))
+
+        val staged = git.stagePaths(listOf("[PMM]/a.txt"))
+        assertTrue(staged!!.success, staged.output)
+        val afterStage = git.statusFast().output.lines()
+        assertTrue("A  [PMM]/a.txt" in afterStage, afterStage.toString())
+        assertTrue("?? P" in afterStage, afterStage.toString())
+
+        val unstaged = git.unstagePaths(listOf("[PMM]/a.txt"))
+        assertTrue(unstaged!!.success, unstaged.output)
+        assertTrue("?? [PMM]/a.txt" in git.statusFast().output.lines())
+
+        File(repoDir, "[PMM]").deleteRecursively(); deleteFile("P")
+    }
+
+    @Test @Order(162)
+    fun `statusFast and statusFull agree on a repo without submodules`() {
+        writeFile("status-probe.txt", "x")
+        val fast = git.statusFast()
+        assertTrue(fast.success, fast.output)
+        assertTrue(fast.output.lines().contains("?? status-probe.txt"))
+        val full = git.statusFull()!!
+        assertTrue(full.v1.startsWith("## "))
+        assertTrue(full.v1.lines().contains("?? status-probe.txt"))
+        assertTrue(full.submodules.isEmpty())
+        assertTrue(git.submoduleEntries().isEmpty())
+        deleteFile("status-probe.txt")
+    }
 }

@@ -97,6 +97,18 @@ class Git(val repo: String) {
     fun revParse(ref: String) = git("rev-parse", ref)
     fun status()   = git("status", "--porcelain=v1", "-b", "--untracked-files=all")
     fun statusReadable() = git("status")
+    /** Like [status] but skips scanning submodule working trees (see [WorkingTreeStatus]). */
+    fun statusFast() = git("status", "--porcelain=v1", "-b", "--untracked-files=all", "--ignore-submodules=dirty")
+    /** Full status incl. submodule dirty state, converted to v1 lines (see [WorkingTreeStatus.parseV2]). */
+    fun statusFull(): WorkingTreeStatus.FullStatus? {
+        val r = git("status", "--porcelain=v2", "-b", "--untracked-files=all")
+        return if (r.success) WorkingTreeStatus.parseV2(r.output) else null
+    }
+    /** Submodules from the index + HEAD read from disk — no `git submodule status`. */
+    fun submoduleEntries(): List<WorkingTreeStatus.SubmoduleEntry> {
+        val r = git("ls-files", "-s")
+        return if (r.success) WorkingTreeStatus.parseSubmodules(r.output, java.io.File(repo)) else emptyList()
+    }
     fun fetch()              = git("fetch", "--all", "--prune")
     fun fetchRemote(remote: String) = git("fetch", remote, "--prune")
     fun branches() = git("branch", "--all", "-vv")
@@ -273,6 +285,28 @@ class Git(val repo: String) {
     fun checkoutTheirs(fileName: String) = git("checkout", "--theirs", "--", fileName)
     fun stopTracking(fileName: String) = git("rm", "--cached", "--", fileName)
     fun unstageAll()              = git("restore", "--staged", ".")
+
+    /**
+     * Stages exactly [paths] (additions, modifications and deletions) in one git call.
+     * Much cheaper than `add -A` in repos with many submodules, which walks them all.
+     * Paths are literal (no glob magic, so `[PMM]/x` is not a character class) and
+     * passed via a NUL-separated pathspec file (no command-line length limit).
+     */
+    fun stagePaths(paths: Collection<String>) = withPathspecFile(paths) { f ->
+        git("--literal-pathspecs", "add", "-A", "--pathspec-from-file=$f", "--pathspec-file-nul")
+    }
+    /** Unstages exactly [paths]; see [stagePaths]. */
+    fun unstagePaths(paths: Collection<String>) = withPathspecFile(paths) { f ->
+        git("--literal-pathspecs", "restore", "--staged", "--pathspec-from-file=$f", "--pathspec-file-nul")
+    }
+    private fun withPathspecFile(paths: Collection<String>, run: (String) -> Command): Command? {
+        if (paths.isEmpty()) return null
+        val tmp = java.io.File.createTempFile("gitnarwhal_", ".pathspec")
+        return try {
+            tmp.writeBytes(paths.joinToString("\u0000") { WorkingTreeStatus.unquote(it) }.toByteArray(Charsets.UTF_8))
+            run(tmp.absolutePath)
+        } finally { tmp.delete() }
+    }
 
     /** Apply a unified diff patch. Pass [cached]=true to stage, [reverse]=true to undo. */
     fun applyPatch(patch: String, cached: Boolean = false, reverse: Boolean = false): Command {

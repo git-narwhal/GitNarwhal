@@ -2,6 +2,7 @@ package com.gitnarwhal.views
 
 import com.gitnarwhal.backend.Commit
 import com.gitnarwhal.backend.CommitGraphLayout
+import com.gitnarwhal.backend.WorkingTreeStatus
 import com.gitnarwhal.backend.Git
 import com.gitnarwhal.backend.RefInfo
 import com.gitnarwhal.backend.RefType
@@ -533,13 +534,11 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         val unstageAllBtn      = JButton("Unstage All")
         val unstageSelectedBtn = JButton("Unstage Selected")
         unstageAllBtn.addActionListener {
-            val r = git.unstageAll()
-            if (!r.success) showError("Unstage failed", r.output)
-            refreshFileStatus()
+            gitInBackground("Unstage failed") { listOfNotNull(git.unstageAll().error()) }
         }
         unstageSelectedBtn.addActionListener {
-            stagedList.selectedValuesList.forEach { git.unstage(it.substring(2)) }
-            refreshFileStatus()
+            val paths = entryPaths(stagedList.selectedValuesList)
+            gitInBackground("Unstage failed") { listOfNotNull(git.unstagePaths(paths).error()) }
         }
         val stagedBtnRow = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 2)).apply {
             isOpaque = false; add(unstageAllBtn); add(unstageSelectedBtn)
@@ -559,13 +558,13 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         val stageAllBtn      = JButton("Stage All")
         val stageSelectedBtn = JButton("Stage Selected")
         stageAllBtn.addActionListener {
-            val r = git.addAll()
-            if (!r.success) showError("Stage failed", r.output)
-            refreshFileStatus()
+            // Stage exactly what's listed: `git add -A` would walk every submodule (seconds).
+            val paths = entryPaths((0 until unstagedModel.size()).map { unstagedModel[it] })
+            gitInBackground("Stage failed") { listOfNotNull(git.stagePaths(paths).error()) }
         }
         stageSelectedBtn.addActionListener {
-            unstagedList.selectedValuesList.forEach { git.add(it.substring(2)) }
-            refreshFileStatus()
+            val paths = entryPaths(unstagedList.selectedValuesList)
+            gitInBackground("Stage failed") { listOfNotNull(git.stagePaths(paths).error()) }
         }
         val unstagedBtnRow = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 2)).apply {
             isOpaque = false; add(stageAllBtn); add(stageSelectedBtn)
@@ -611,16 +610,14 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             // ── Staging ───────────────────────────────────────────────────────
             add(JMenuItem("Stage selected").apply {
                 addActionListener {
-                    unstagedList.selectedValuesList
-                        .filter { !it.startsWith("! ") }
-                        .forEach { git.add(it.substring(2)) }
-                    refreshFileStatus()
+                    val paths = entryPaths(unstagedList.selectedValuesList.filter { !it.startsWith("! ") })
+                    gitInBackground("Stage failed") { listOfNotNull(git.stagePaths(paths).error()) }
                 }
             })
             add(JMenuItem("Mark as resolved (git add)").apply {
                 addActionListener {
-                    unstagedList.selectedValuesList.forEach { git.add(it.substring(2)) }
-                    refreshFileStatus()
+                    val paths = entryPaths(unstagedList.selectedValuesList)
+                    gitInBackground("Mark as resolved failed") { listOfNotNull(git.stagePaths(paths).error()) }
                 }
             })
             // Accept ours/theirs — only shown for conflicted files (UU/AA/DD prefix)
@@ -639,14 +636,14 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 addActionListener {
                     val v = unstagedList.selectedValue ?: return@addActionListener
                     val file = v.substring(2)
-                    git.checkoutOurs(file); git.add(file); refreshFileStatus()
+                    gitInBackground("Accept ours failed") { listOfNotNull(git.checkoutOurs(file).error() ?: git.add(file).error()) }
                 }
             }
             val acceptTheirsItem = JMenuItem("Accept Theirs (keep incoming)").apply {
                 addActionListener {
                     val v = unstagedList.selectedValue ?: return@addActionListener
                     val file = v.substring(2)
-                    git.checkoutTheirs(file); git.add(file); refreshFileStatus()
+                    gitInBackground("Accept theirs failed") { listOfNotNull(git.checkoutTheirs(file).error() ?: git.add(file).error()) }
                 }
             }
             add(acceptOursItem)
@@ -662,9 +659,9 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                     val msg = "Discard changes to:\n$names\n\n" +
                         (if (deletes) "Untracked files will be DELETED from disk.\n" else "") + "This cannot be undone."
                     if (!confirm(msg)) return@addActionListener
-                    val errors = files.mapNotNull { git.discard(it.substring(2), untracked = it.startsWith("? ")) }
-                    if (errors.isNotEmpty()) showError("Discard failed", errors.joinToString("\n"))
-                    refreshFileStatus()
+                    gitInBackground("Discard failed") {
+                        files.mapNotNull { git.discard(it.substring(2), untracked = it.startsWith("? ")) }
+                    }
                 }
             })
             addSeparator()
@@ -730,8 +727,8 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             addSeparator()
             add(JMenuItem("Unstage selected").apply {
                 addActionListener {
-                    stagedList.selectedValuesList.forEach { git.unstage(it.substring(2)) }
-                    refreshFileStatus()
+                    val paths = entryPaths(stagedList.selectedValuesList)
+                    gitInBackground("Unstage failed") { listOfNotNull(git.unstagePaths(paths).error()) }
                 }
             })
             addSeparator()
@@ -860,17 +857,91 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         }
     }
 
+    // -- Two-phase working-tree status (see WorkingTreeStatus) ------------------
+    // Fast pass skips submodule working trees (~0.3s even with 100+ submodules); the
+    // full pass (porcelain v2, seconds) then fills in dirty submodules. [statusGen]
+    // discards results overtaken by a newer refresh; full passes are coalesced.
+    private val statusGen = java.util.concurrent.atomic.AtomicInteger()
+    /** Submodules with uncommitted content, from the last full pass. */
+    @Volatile private var dirtySubmodules: Set<String> = emptySet()
+    private var fullStatusRunning = false
+    private var fullStatusPending = false
+    private var lastAppliedStatus: String? = null
+
+    /** Fast status with last-known dirty submodules merged in (background thread). */
+    private fun fastStatusOutput(): String =
+        WorkingTreeStatus.mergeDirtySubmodules(git.statusFast().output, dirtySubmodules)
+
     private fun refreshFileStatus() {
+        val gen = statusGen.incrementAndGet()
         object : SwingWorker<String, Void>() {
-            override fun doInBackground() = git.status().output
+            override fun doInBackground() = fastStatusOutput()
             override fun done() {
                 val out = try { get() } catch (e: Exception) { return }
+                if (gen != statusGen.get()) return
+                lastAppliedStatus = null   // always apply: ignore patterns may have changed
                 applyFileStatus(out)
+                commitBtn.badge = countModified(out)
+                requestFullStatus()
+            }
+        }.execute()
+    }
+
+    /** EDT: schedules a full status pass; at most one runs at a time. */
+    private fun requestFullStatus() {
+        if (fullStatusRunning) { fullStatusPending = true; return }
+        fullStatusRunning = true; fullStatusPending = false
+        val gen = statusGen.get()
+        object : SwingWorker<WorkingTreeStatus.FullStatus?, Void>() {
+            override fun doInBackground() = git.statusFull()
+            override fun done() {
+                fullStatusRunning = false
+                val full = try { get() } catch (e: Exception) { null }
+                if (full != null && gen == statusGen.get()) applyFullStatus(full)
+                if (fullStatusPending) requestFullStatus()
+            }
+        }.execute()
+    }
+
+    private fun applyFullStatus(full: WorkingTreeStatus.FullStatus) {
+        dirtySubmodules = full.submodules.filterValues { it.dirty }.keys
+        applyFileStatus(full.v1)
+        val modified = countModified(full.v1)
+        commitBtn.badge = modified
+        if (allSubmodules.any { (it.path in dirtySubmodules) != it.isDirty })
+            applySubmodules(allSubmodules.map { it.copy(isDirty = it.path in dirtySubmodules) })
+        // Only dirty submodules changed: the graph's "Uncommitted changes" node may be stale.
+        if ((modified > 0) != hasUncommittedNow) refresh()
+    }
+
+    private fun countModified(statusOut: String) =
+        statusOut.lines().count { it.length > 2 && it[2] == ' ' && !it.startsWith("##") }
+
+    /** File-list entries ("X path" / "X old -> new") -> the paths git should act on. */
+    private fun entryPaths(entries: List<String>): List<String> =
+        entries.flatMap { e -> e.substring(2).split(" -> ") }.map { WorkingTreeStatus.unquote(it) }.distinct()
+
+    private fun com.gitnarwhal.utils.Command?.error(): String? =
+        if (this == null || success) null else output.ifBlank { "git exited with code $code" }
+
+    /**
+     * Runs [work] (git calls returning error messages) off the EDT, then shows any
+     * errors and refreshes the file status. Keeps the UI responsive in big repos.
+     */
+    private fun gitInBackground(errorTitle: String, work: () -> List<String>) {
+        object : SwingWorker<List<String>, Void>() {
+            override fun doInBackground() = work()
+            override fun done() {
+                val errors = try { get() } catch (e: Exception) { listOf(e.cause?.message ?: e.toString()) }
+                if (errors.isNotEmpty()) showError(errorTitle, errors.joinToString("\n"))
+                refreshFileStatus()
             }
         }.execute()
     }
 
     private fun applyFileStatus(out: String) {
+        if (out == lastAppliedStatus) return   // full pass often matches the fast one: no flicker
+        lastAppliedStatus = out
         val prevFiles  = currentDiffFiles
         val prevStaged = currentDiffStaged
 
@@ -2149,7 +2220,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 val fLog         = pool.submit<com.gitnarwhal.utils.Command> { git.log() }
                 val fStash       = pool.submit<com.gitnarwhal.utils.Command> { git.stashList() }
                 val fTags        = pool.submit<com.gitnarwhal.utils.Command> { git.tags() }
-                val fStatus      = pool.submit<com.gitnarwhal.utils.Command> { git.status() }
+                val fStatus      = pool.submit<String> { fastStatusOutput() }
                 val fUnpulled    = pool.submit<Int> { git.unpulledCount().output.trim().toIntOrNull() ?: 0 }
                 val fUnpushed    = pool.submit<Int> { git.unpushedCount().output.trim().toIntOrNull() ?: 0 }
                 val fWorktrees   = pool.submit<List<Git.WorktreeEntry>> { git.worktreeList() }
@@ -2167,7 +2238,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 val unpushed   = fUnpushed.get()
                 val worktrees  = fWorktrees.get()
                 val (branch, tracking) = fBranchTrack.get()
-                val modified   = status.output.lines().count { it.length > 2 && it[2] == ' ' && !it.startsWith("##") }
+                val modified   = countModified(status)
                 // Heavy graph layout computed HERE (background), not on the EDT.
                 // Only the first [window] commits are laid out — keeps the JTable small
                 // enough that Java2D renders it reliably; more load on scroll.
@@ -2178,7 +2249,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                     branches.output, branches.success, log_.output, log_.success,
                     if (stash.success) stash.output else "",
                     if (tags.success) tags.output else "",
-                    status.output,
+                    status,
                     modified, unpulled, unpushed,
                     branch, tracking, commits, worktrees
                 )
@@ -2201,6 +2272,8 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 applyStashes(snap.stashOut)
                 applyWorktrees(snap.worktreeEntries)
                 sidebarBar.setBusy(false)
+                statusGen.incrementAndGet()
+                lastAppliedStatus = null
                 applyFileStatus(snap.statusOut)
                 commitBtn.badge = snap.modifiedCount
                 pullBtn.badge   = snap.unpulledCount
@@ -2210,8 +2283,10 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
                 trackingBranchRef = snap.tracking?.second
                 updatePushCheckboxLabel()
                 hideLoading()
-                // Submodule status runs separately so it never blocks the main UI
+                // Submodules and the full (submodule-aware) status run separately so they
+                // never block the main UI
                 refreshSubmodulesAsync()
+                requestFullStatus()
             }
         }.execute()
     }
@@ -2219,37 +2294,19 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     // ── Submodule support ─────────────────────────────────────────────────────
 
     /**
-     * Parses `git submodule status` and, per submodule, probes its working tree for
-     * uncommitted changes. Runs on a background thread (spawns one git-status per
-     * submodule), so the result is handed to [applySubmodules] on the EDT.
-     *
-     * Flag meanings: ' ' clean · '+' checked-out commit differs from recorded · '-'
-     * uninitialized · 'U' merge conflicts.
+     * Submodules from the index (`git ls-files -s`) with HEAD read from disk: one git
+     * call instead of `git submodule status` (several processes per submodule) plus a
+     * `git status` per submodule. Dirty flags come from the full status pass.
      */
-    private fun parseSubmodules(output: String): List<SubmoduleInfo> {
-        val subs = mutableListOf<SubmoduleInfo>()
-        for (line in output.lines()) {
-            if (line.isBlank()) continue
-            val flag = line[0]
-            val rest = line.drop(1).trim()
-            val spaceIdx = rest.indexOf(' ')
-            if (spaceIdx < 0) continue
-            val hash      = rest.substring(0, spaceIdx)
-            val remainder = rest.substring(spaceIdx + 1).trim()
-            val subPath   = remainder.substringBefore(" (").substringBefore("\t").trim()
-            if (subPath.isBlank()) continue
-            val name = subPath.substringAfterLast("/").ifBlank { subPath }
-            val uninitialized = flag == '-'
-            subs += SubmoduleInfo(
-                path            = subPath,
-                name            = name,
-                hash            = hash,
-                isDirty         = if (uninitialized) false else git.submoduleDirty(subPath),
-                differentCommit = flag == '+' || flag == 'U',
-                isUninitialized = uninitialized
-            )
-        }
-        return subs
+    private fun loadSubmodules(): List<SubmoduleInfo> = git.submoduleEntries().map { e ->
+        SubmoduleInfo(
+            path            = e.path,
+            name            = e.path.substringAfterLast("/").ifBlank { e.path },
+            hash            = e.headHash ?: e.recordedHash,
+            isDirty         = e.path in dirtySubmodules,
+            differentCommit = e.differentCommit,
+            isUninitialized = !e.initialized,
+        )
     }
 
     private fun applySubmodules(subs: List<SubmoduleInfo>) {
@@ -2368,7 +2425,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
     private fun refreshSubmodulesAsync() {
         sidebarBar.setBusy(true)
         object : SwingWorker<List<SubmoduleInfo>, Void>() {
-            override fun doInBackground() = parseSubmodules(git.submoduleStatus().output)
+            override fun doInBackground() = loadSubmodules()
             override fun done() {
                 sidebarBar.setBusy(false)
                 val subs = try { get() } catch (_: Exception) { return }
