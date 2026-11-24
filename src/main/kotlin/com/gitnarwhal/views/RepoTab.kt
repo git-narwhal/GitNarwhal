@@ -1,6 +1,7 @@
 package com.gitnarwhal.views
 
 import com.gitnarwhal.backend.Commit
+import com.gitnarwhal.backend.CommitGraphLayout
 import com.gitnarwhal.backend.Git
 import com.gitnarwhal.backend.RefInfo
 import com.gitnarwhal.backend.RefType
@@ -393,7 +394,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         private const val CARD_HISTORY     = "history"
         private const val CARD_FILE_STATUS = "fileStatus"
 
-        const val UNCOMMITTED_HASH = "0000000000000000000000000000000000000000"
+        const val UNCOMMITTED_HASH = CommitGraphLayout.UNCOMMITTED_HASH
 
         // History is loaded in windows of this many commits; more are appended on scroll.
         private const val COMMIT_PAGE = 300
@@ -408,18 +409,7 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
             Thread(r, "gitnarwhal-git").apply { isDaemon = true }
         }
 
-        val GRAPH_PALETTE = listOf(
-            Color(0x4F, 0xC3, 0xF7),  // sky blue
-            Color(0x81, 0xC7, 0x84),  // green
-            Color(0xFF, 0xB7, 0x4D),  // amber
-            Color(0xF0, 0x62, 0x92),  // pink
-            Color(0xCE, 0x93, 0xD8),  // lavender
-            Color(0x80, 0xCB, 0xC4),  // teal
-            Color(0xFF, 0xF1, 0x76),  // yellow
-            Color(0xA5, 0xD6, 0xA7),  // light green
-            Color(0xFF, 0xCC, 0xBC),  // peach
-            Color(0xB0, 0xBE, 0xC5),  // blue-grey
-        )
+        val GRAPH_PALETTE = CommitGraphLayout.GRAPH_PALETTE
     }
 
     // ── File Status panel ─────────────────────────────────────────────────────
@@ -2598,187 +2588,9 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         current.add(DefaultMutableTreeNode(BranchInfo(path, segs.last(), active, tracking, ahead, behind, inWorktree)))
     }
 
-    /**
-     * Parses git-log output and computes the full commit graph (topological order,
-     * lane assignment, line geometry). Pure data work — NO Swing access — so it runs
-     * on a background thread. Hand the result to [applyCommitList] on the EDT.
-     */
-    private fun layoutCommitGraph(logOutput: String, hasUncommitted: Boolean = false, limit: Int = 0): List<Commit> {
-        val localMap      = LinkedHashMap<String, Commit>()
-        val localList     = mutableListOf<Commit>()
-        val parentHashMap = mutableMapOf<String, List<String>>()  // hash → parent hashes (for pass 2)
-        var parsed = 0   // number of commits accepted so far (for windowed loading)
-        for (record in logOutput.split('')) {
-            val f = record.split('')
-            if (f.size < 8) continue
-            val hash = f[0].trim(); if (hash.isBlank()) continue
-            if (limit in 1..parsed) break   // window full — stop parsing
-            // Pass 1: populate commit data; parent linking deferred to pass 2
-            val commit = localMap.getOrPut(hash) { Commit(hash, this) }
-            commit.prePopulate(listOf(f[2], f[3], f[4], f[5], f[6], f[7]))
-            val decoration = if (f.size > 8) f[8] else ""
-            commit.refs = parseRefs(decoration)
-            commit.isCurrentHead = decoration.split(", ").any { p ->
-                val t = p.trim(); t.startsWith("HEAD -> ") || t == "HEAD"
-            }
-            parentHashMap[hash] = f[1].split(" ").filter { it.isNotBlank() }
-            parsed++
-        }
-        // Pass 2: link parents/children — ALL commits now in localMap, lookups succeed
-        for ((h, parentHashes) in parentHashMap) {
-            val commit = localMap[h] ?: continue
-            for (ph in parentHashes) {
-                val p = localMap[ph] ?: continue
-                if (p !in commit.parents) { commit.parents.add(p); p.childs.add(commit) }
-            }
-        }
-        // ── Topological sort (post-order DFS, newest first → y=0 = top row) ──
-        // Iterative (explicit stack) to avoid StackOverflowError on deep histories.
-        var y = 0
-        val visiting = HashSet<String>()
-        val stack    = ArrayDeque<Pair<Commit, Boolean>>()
-        localMap.values.sortedBy { runCatching { -it.committerTimeStamp.toLong() }.getOrDefault(0L) }
-            .forEach { root ->
-                if (root.explored) return@forEach
-                stack.addLast(root to false)
-                while (stack.isNotEmpty()) {
-                    val (c, processed) = stack.removeLast()
-                    if (processed) {
-                        if (!c.explored) { c.explored = true; c.y = y++ }
-                        continue
-                    }
-                    if (c.explored || c.hash in visiting) continue
-                    visiting.add(c.hash)
-                    stack.addLast(c to true)
-                    for (i in c.childs.indices.reversed()) {
-                        val child = c.childs[i]
-                        if (!child.explored && child.hash !in visiting) stack.addLast(child to false)
-                    }
-                }
-            }
-        localMap.values.sortedBy { it.y }.forEach { localList.add(it) }
-
-        // ── Lane (x) assignment ───────────────────────────────────────────────
-        // laneHashes[i] = hash of next commit expected in lane i (null = free)
-        val laneHashes = mutableListOf<String?>()
-        val laneColors = mutableListOf<Color>()
-        var colorIdx = 0
-
-        fun nextColor() = GRAPH_PALETTE[colorIdx++ % GRAPH_PALETTE.size]
-
-        fun allocateLane(hash: String, color: Color): Int {
-            val free = laneHashes.indexOfFirst { it == null }
-            return if (free >= 0) {
-                laneHashes[free] = hash; laneColors[free] = color; free
-            } else {
-                laneHashes.add(hash); laneColors.add(color); laneHashes.size - 1
-            }
-        }
-
-        for (commit in localList) {
-            val topLines = laneHashes.indices
-                .filter { laneHashes[it] != null }
-                .map { it to laneColors[it] }
-            val topSet = topLines.map { it.first }.toSet()  // lanes active before this row
-
-            val laneIdx = laneHashes.indexOf(commit.hash)
-            val col: Int
-            if (laneIdx >= 0) {
-                col = laneIdx; commit.color = laneColors[col]
-            } else {
-                val c = nextColor(); col = allocateLane(commit.hash, c); commit.color = c
-            }
-            commit.x = col
-
-            val forkLines = mutableListOf<Pair<Int, Color>>()
-            if (commit.parents.isEmpty()) {
-                laneHashes[col] = null
-            } else {
-                val fp     = commit.parents[0]
-                val fpLane = laneHashes.indexOf(fp.hash)
-                when {
-                    fpLane >= 0 && fpLane != col -> {
-                        laneHashes[col] = null
-                        forkLines.add(fpLane to commit.color)  // use the branch's own color, not the ancestor's
-                    }
-                    fpLane < 0 -> laneHashes[col] = fp.hash
-                    // fpLane == col: already correct
-                }
-                for (parent in commit.parents.drop(1)) {
-                    val pLane = laneHashes.indexOf(parent.hash)
-                    if (pLane >= 0) {
-                        forkLines.add(pLane to laneColors[pLane])
-                    } else {
-                        val c = nextColor(); val nl = allocateLane(parent.hash, c)
-                        forkLines.add(nl to c)
-                    }
-                }
-            }
-
-            // Exclude newly-created fork target lanes: their vertical starts in the NEXT row.
-            // The fork diagonal already connects the commit dot to them; a mid-starting
-            // vertical in this row would create the phantom "stub" line.
-            val newForkLanes = forkLines.map { it.first }.filter { it !in topSet }.toSet()
-            val bottomLines = laneHashes.indices
-                .filter { laneHashes[it] != null && it !in newForkLanes }
-                .map { it to laneColors[it] }
-
-            commit.graphTopLines    = topLines
-            commit.graphBottomLines = bottomLines
-            commit.graphForkLines   = forkLines
-        }
-
-        // ── Uncommitted-changes virtual node ─────────────────────────────────
-        if (hasUncommitted && localList.isNotEmpty()) {
-            val grey     = Color.GRAY
-            val head     = localList.firstOrNull { it.isCurrentHead } ?: localList.first()
-            val headIdx  = localList.indexOf(head).coerceAtLeast(0)
-            val headLane = head.x
-
-            val virtual = Commit(UNCOMMITTED_HASH, this).apply {
-                prePopulate(listOf("", "", "", "", "", "Uncommitted changes"))
-                x     = headLane
-                y     = -1
-                color = grey
-                refs  = emptyList()                                  // no branch pills on the working-copy node
-                graphTopLines    = emptyList()
-                graphBottomLines = listOf(headLane to grey)
-                graphForkLines   = emptyList()
-            }
-            // branch pills stay on HEAD (head.refs left untouched)
-
-            if (headIdx == 0) {
-                // HEAD is already the top commit — just sit directly above it.
-                head.graphTopLines = head.graphTopLines + (headLane to grey)
-            } else {
-                // HEAD is behind origin: shift the commits above HEAD one lane to the
-                // right, freeing headLane for a grey connector that runs from the
-                // (top-of-list) uncommitted node straight down to HEAD. The origin
-                // chain then merges into HEAD from its shifted lane.
-                fun shift(lines: List<Pair<Int, Color>>) =
-                    lines.map { (l, c) -> (if (l >= headLane) l + 1 else l) to c }
-                for (i in 0 until headIdx) {
-                    val c = localList[i]
-                    if (c.x >= headLane) c.x += 1
-                    c.graphTopLines    = shift(c.graphTopLines)
-                    c.graphBottomLines = shift(c.graphBottomLines)
-                    c.graphForkLines   = shift(c.graphForkLines)
-                    // Direct children of HEAD now fork down-left into headLane;
-                    // everyone else just lets the grey connector pass straight through.
-                    if (head in c.parents) {
-                        c.graphForkLines   = c.graphForkLines + (headLane to grey)
-                        c.graphBottomLines = c.graphBottomLines.filterNot { it.first == c.x }
-                    }
-                    c.graphTopLines    = c.graphTopLines    + (headLane to grey)
-                    c.graphBottomLines = c.graphBottomLines + (headLane to grey)
-                }
-                head.graphTopLines = head.graphTopLines + (headLane to grey)
-            }
-            localList.add(0, virtual)
-        }
-
-        return localList
-    }
+    /** Background-safe commit graph layout; see [CommitGraphLayout.layout]. */
+    private fun layoutCommitGraph(logOutput: String, hasUncommitted: Boolean = false, limit: Int = 0): List<Commit> =
+        CommitGraphLayout.layout(logOutput, hasUncommitted, limit, this)
 
     /**
      * EDT: pushes a pre-computed commit list (from [layoutCommitGraph]) into the table.
@@ -2877,25 +2689,6 @@ class RepoTab(var path: String, val tabTitle: String) : JPanel(BorderLayout()) {
         commitTable.columnModel.getColumn(1).apply { preferredWidth = descW; width = descW }
     }
 
-    private fun parseRefs(decoration: String): List<RefInfo> {
-        if (decoration.isBlank()) return emptyList()
-        val result = mutableListOf<RefInfo>()
-        for (rawPart in decoration.split(", ")) {
-            val part = rawPart.trim()
-            when {
-                part.startsWith("HEAD -> ") -> {
-                    val branch = part.removePrefix("HEAD -> ")
-                    result.add(RefInfo(branch, if (branch.contains("/")) RefType.REMOTE_BRANCH else RefType.LOCAL_BRANCH))
-                }
-                part == "HEAD"           -> result.add(RefInfo("HEAD", RefType.HEAD))
-                part.startsWith("tag: ") -> result.add(RefInfo(part.removePrefix("tag: "), RefType.TAG))
-                part.contains(" -> ")    -> { /* remote HEAD alias e.g. origin/HEAD -> origin/main */ }
-                part.contains("/")       -> result.add(RefInfo(part, RefType.REMOTE_BRANCH))
-                part.isNotBlank()        -> result.add(RefInfo(part, RefType.LOCAL_BRANCH))
-            }
-        }
-        return result
-    }
 
     private fun applyStashes(output: String) {
         stashesNode.removeAllChildren()

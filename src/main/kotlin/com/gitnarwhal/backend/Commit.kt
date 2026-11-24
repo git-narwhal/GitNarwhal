@@ -25,6 +25,7 @@ class Commit(var hash: String, val repoTab: RepoTab? = null) {
     var graphTopLines: List<Pair<Int, Color>> = emptyList()  // (lane, color) active above this row
     var graphBottomLines: List<Pair<Int, Color>> = emptyList()  // (lane, color) active below this row
     var graphForkLines: List<Pair<Int, Color>> = emptyList()  // (parentLane, color) diagonals from dot
+    var graphMergeLines: List<Pair<Int, Color>> = emptyList()  // (childLane, color) diagonals into dot (top half)
 
     //region Git show parameters
     private val show = GitShow()

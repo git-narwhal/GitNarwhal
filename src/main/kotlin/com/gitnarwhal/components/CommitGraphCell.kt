@@ -57,6 +57,12 @@ class CommitGraphCell : DefaultTableCellRenderer() {
                 g2.drawLine(dotX, mid, H_OFFSET + parentLane * LANE_W, height)
             }
 
+            // Merge-in lines — diagonals from lanes above converging into the dot (top half)
+            for ((childLane, color) in c.graphMergeLines) {
+                g2.color = color
+                g2.drawLine(H_OFFSET + childLane * LANE_W, 0, dotX, mid)
+            }
+
             // Commit dot — draw on top of lines
             val isHead = c.isCurrentHead
             if (isHead) {
